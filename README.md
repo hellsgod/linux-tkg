@@ -1,3 +1,7 @@
+## IMPORTANT READ BEFORE YOU CLONE AND BUILD!
+
+### This is a fork and customized for my machine and my liking! If you build this fork, you'll end up having a kernel optimized for zen4 with custom userpatches. Do not use this fork, if you don't know what you're doing!
+
 ## linux-tkg
 
 This repository provides scripts to automatically download, patch and compile the Linux Kernel from [the official Linux git repository](https://git.kernel.org/pub/scm/linux/kernel/git/stable/linux.git), with a selection of patches aiming for better desktop/gaming experience. The provided patches can be enabled/disabled by editing the `customization.cfg` file and/or by following the interactive install script. You can use an external config file (default is `$HOME/.config/frogminer/linux-tkg.cfg`, tweakable with the `_EXT_CONFIG_PATH` variable in `customization.cfg`). You can also use your own patches (more information in `customization.cfg` file).
