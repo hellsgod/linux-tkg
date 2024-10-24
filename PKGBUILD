@@ -51,12 +51,12 @@ source "$_where"/BIG_UGLY_FROGMINER
 if [ -n "$_custom_pkgbase" ]; then
   pkgbase="${_custom_pkgbase}"
 else
-  pkgbase=linux"${_basever}"-tkg-"${_cpusched}"${_compiler_name}
+  pkgbase=linux"${_basever}"-hC-"${_cpusched}"${_compiler_name}
 fi
 pkgname=("${pkgbase}" "${pkgbase}-headers")
 pkgver="${_basekernel}"."${_sub}"
-pkgrel=273
-pkgdesc='Linux-tkg'
+pkgrel=431
+pkgdesc='Linux-hC'
 arch=('x86_64') # no i686 in here
 url="https://www.kernel.org/"
 license=('GPL2')
