@@ -271,6 +271,90 @@ The bug was reported by Shin Kawamura.
 Fixes: 755804d16965 ("zram: introduce an aged idle interface")
 Signed-off-by: Sergey Senozhatsky <senozhatsky@chromium.org>
 
+zram: do not open-code comp priority 0
+
+A cosmetic change: do not open-code compression priority 0, use
+ZRAM_PRIMARY_COMP instead.
+
+Link: https://lkml.kernel.org/r/20241009042908.750260-1-senozhatsky@chromium.org
+Signed-off-by: Sergey Senozhatsky <senozhatsky@chromium.org>
+Cc: Minchan Kim <minchan@kernel.org>
+Signed-off-by: Andrew Morton <akpm@linux-foundation.org>
+
+
+zram: ZRAM_DEF_COMP should depend on ZRAM
+
+When Compressed RAM block device support is disabled, the
+CONFIG_ZRAM_DEF_COMP symbol still ends up in the generated config file:
+
+    CONFIG_ZRAM_DEF_COMP="unset-value"
+
+While this causes no real harm, avoid polluting the config file by
+adding a dependency on ZRAM.
+
+Link: https://lkml.kernel.org/r/64e05bad68a9bd5cc322efd114a04d25de525940.1730807319.git.geert@linux-m68k.org
+Fixes: 917a59e81c34 ("zram: introduce custom comp backends API")
+Signed-off-by: Geert Uytterhoeven <geert@linux-m68k.org>
+Reviewed-by: Sergey Senozhatsky <senozhatsky@chromium.org>
+Cc: Jens Axboe <axboe@kernel.dk>
+Cc: Minchan Kim <minchan@kernel.org>
+Signed-off-by: Andrew Morton <akpm@linux-foundation.org>
+
+
+zram: fix NULL pointer in comp_algorithm_show()
+
+LTP reported a NULL pointer dereference as followed:
+
+ CPU: 7 UID: 0 PID: 5995 Comm: cat Kdump: loaded Not tainted 6.12.0-rc6+ #3
+ Hardware name: QEMU KVM Virtual Machine, BIOS 0.0.0 02/06/2015
+ pstate: 40400005 (nZcv daif +PAN -UAO -TCO -DIT -SSBS BTYPE=--)
+ pc : __pi_strcmp+0x24/0x140
+ lr : zcomp_available_show+0x60/0x100 [zram]
+ sp : ffff800088b93b90
+ x29: ffff800088b93b90 x28: 0000000000000001 x27: 0000000000400cc0
+ x26: 0000000000000ffe x25: ffff80007b3e2388 x24: 0000000000000000
+ x23: ffff80007b3e2390 x22: ffff0004041a9000 x21: ffff80007b3e2900
+ x20: 0000000000000000 x19: 0000000000000000 x18: 0000000000000000
+ x17: 0000000000000000 x16: 0000000000000000 x15: 0000000000000000
+ x14: 0000000000000000 x13: 0000000000000000 x12: 0000000000000000
+ x11: 0000000000000000 x10: ffff80007b3e2900 x9 : ffff80007b3cb280
+ x8 : 0101010101010101 x7 : 0000000000000000 x6 : 0000000000000000
+ x5 : 0000000000000040 x4 : 0000000000000000 x3 : 00656c722d6f7a6c
+ x2 : 0000000000000000 x1 : ffff80007b3e2900 x0 : 0000000000000000
+ Call trace:
+  __pi_strcmp+0x24/0x140
+  comp_algorithm_show+0x40/0x70 [zram]
+  dev_attr_show+0x28/0x80
+  sysfs_kf_seq_show+0x90/0x140
+  kernfs_seq_show+0x34/0x48
+  seq_read_iter+0x1d4/0x4e8
+  kernfs_fop_read_iter+0x40/0x58
+  new_sync_read+0x9c/0x168
+  vfs_read+0x1a8/0x1f8
+  ksys_read+0x74/0x108
+  __arm64_sys_read+0x24/0x38
+  invoke_syscall+0x50/0x120
+  el0_svc_common.constprop.0+0xc8/0xf0
+  do_el0_svc+0x24/0x38
+  el0_svc+0x38/0x138
+  el0t_64_sync_handler+0xc0/0xc8
+  el0t_64_sync+0x188/0x190
+
+The zram->comp_algs[ZRAM_PRIMARY_COMP] can be NULL in zram_add() if
+comp_algorithm_set() has not been called.  User can access the zram device
+by sysfs after device_add_disk(), so there is a time window to trigger the
+NULL pointer dereference.  Move it ahead device_add_disk() to make sure
+when user can access the zram device, it is ready.  comp_algorithm_set()
+is protected by zram->init_lock in other places and no such problem.
+
+Link: https://lkml.kernel.org/r/20241108100147.3776123-1-liushixin2@huawei.com
+Fixes: 7ac07a26dea7 ("zram: preparation for multi-zcomp support")
+Signed-off-by: Liu Shixin <liushixin2@huawei.com>
+Reviewed-by: Sergey Senozhatsky <senozhatsky@chromium.org>
+Cc: Jens Axboe <axboe@kernel.dk>
+Cc: Minchan Kim <minchan@kernel.org>
+Signed-off-by: Andrew Morton <akpm@linux-foundation.org>
+
 diff --git a/Documentation/admin-guide/blockdev/zram.rst b/Documentation/admin-guide/blockdev/zram.rst
 index 678d70d6e1c3a..714a5171bfc0b 100644
 --- a/Documentation/admin-guide/blockdev/zram.rst
@@ -284,8 +368,20 @@ index 678d70d6e1c3a..714a5171bfc0b 100644
  ========  =============================================================
  
  If you use 'echo', the returned value is set by the 'echo' utility,
+diff --git a/drivers/block/zram/Kconfig b/drivers/block/zram/Kconfig
+index 6aea609b795c2..402b7b1758632 100644
+--- a/drivers/block/zram/Kconfig
++++ b/drivers/block/zram/Kconfig
+@@ -94,6 +94,7 @@ endchoice
+ 
+ config ZRAM_DEF_COMP
+ 	string
++	depends on ZRAM
+ 	default "lzo-rle" if ZRAM_DEF_COMP_LZORLE
+ 	default "lzo" if ZRAM_DEF_COMP_LZO
+ 	default "lz4" if ZRAM_DEF_COMP_LZ4
 diff --git a/drivers/block/zram/zram_drv.c b/drivers/block/zram/zram_drv.c
-index ad9c9bc3ccfc5..25440fc24dd42 100644
+index ad9c9bc3ccfc5..3dee026988dc8 100644
 --- a/drivers/block/zram/zram_drv.c
 +++ b/drivers/block/zram/zram_drv.c
 @@ -178,11 +178,105 @@ static inline u32 zram_get_priority(struct zram *zram, u32 index)
@@ -809,10 +905,8 @@ index ad9c9bc3ccfc5..25440fc24dd42 100644
 -
 -		if (mode & RECOMPRESS_IDLE &&
 -		    !zram_test_flag(zram, index, ZRAM_IDLE))
-+		zram_slot_lock(zram, pps->index);
-+		if (!zram_test_flag(zram, pps->index, ZRAM_PP_SLOT))
- 			goto next;
- 
+-			goto next;
+-
 -		if (mode & RECOMPRESS_HUGE &&
 -		    !zram_test_flag(zram, index, ZRAM_HUGE))
 -			goto next;
@@ -821,8 +915,10 @@ index ad9c9bc3ccfc5..25440fc24dd42 100644
 -		    zram_test_flag(zram, index, ZRAM_UNDER_WB) ||
 -		    zram_test_flag(zram, index, ZRAM_SAME) ||
 -		    zram_test_flag(zram, index, ZRAM_INCOMPRESSIBLE))
--			goto next;
--
++		zram_slot_lock(zram, pps->index);
++		if (!zram_test_flag(zram, pps->index, ZRAM_PP_SLOT))
+ 			goto next;
+ 
 -		err = zram_recompress(zram, index, page, &num_recomp_pages,
 -				      threshold, prio, prio_max);
 +		err = recompress_slot(zram, pps->index, page,
@@ -845,6 +941,15 @@ index ad9c9bc3ccfc5..25440fc24dd42 100644
  	up_read(&zram->init_lock);
  	return ret;
  }
+@@ -2105,7 +2294,7 @@ static void zram_destroy_comps(struct zram *zram)
+ {
+ 	u32 prio;
+ 
+-	for (prio = 0; prio < ZRAM_MAX_COMPS; prio++) {
++	for (prio = ZRAM_PRIMARY_COMP; prio < ZRAM_MAX_COMPS; prio++) {
+ 		struct zcomp *comp = zram->comps[prio];
+ 
+ 		zram->comps[prio] = NULL;
 @@ -2144,6 +2333,7 @@ static void zram_reset_device(struct zram *zram)
  	zram->disksize = 0;
  	zram_destroy_comps(zram);
@@ -853,14 +958,35 @@ index ad9c9bc3ccfc5..25440fc24dd42 100644
  	reset_bdev(zram);
  
  	comp_algorithm_set(zram, ZRAM_PRIMARY_COMP, default_compressor);
-@@ -2381,6 +2571,7 @@ static int zram_add(void)
+@@ -2176,7 +2366,7 @@ static ssize_t disksize_store(struct device *dev,
+ 		goto out_unlock;
+ 	}
+ 
+-	for (prio = 0; prio < ZRAM_MAX_COMPS; prio++) {
++	for (prio = ZRAM_PRIMARY_COMP; prio < ZRAM_MAX_COMPS; prio++) {
+ 		if (!zram->comp_algs[prio])
+ 			continue;
+ 
+@@ -2381,6 +2571,9 @@ static int zram_add(void)
  	zram->disk->fops = &zram_devops;
  	zram->disk->private_data = zram;
  	snprintf(zram->disk->disk_name, 16, "zram%d", device_id);
 +	atomic_set(&zram->pp_in_progress, 0);
++	zram_comp_params_reset(zram);
++	comp_algorithm_set(zram, ZRAM_PRIMARY_COMP, default_compressor);
  
  	/* Actual capacity set using sysfs (/sys/block/zram<id>/disksize */
  	set_capacity(zram->disk, 0);
+@@ -2388,9 +2581,6 @@ static int zram_add(void)
+ 	if (ret)
+ 		goto out_cleanup_disk;
+ 
+-	zram_comp_params_reset(zram);
+-	comp_algorithm_set(zram, ZRAM_PRIMARY_COMP, default_compressor);
+-
+ 	zram_debugfs_register(zram);
+ 	pr_info("Added device: %s\n", zram->disk->disk_name);
+ 	return device_id;
 diff --git a/drivers/block/zram/zram_drv.h b/drivers/block/zram/zram_drv.h
 index cfc8c059db636..134be414e2106 100644
 --- a/drivers/block/zram/zram_drv.h
