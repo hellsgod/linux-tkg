@@ -1,3 +1,38 @@
+ZEN: mm: Stop kswapd early when nothing's waiting for it to free pages
+
+Contains:
+  - mm: Stop kswapd early when nothing's waiting for it to free pages
+
+    Keeping kswapd running when all the failed allocations that invoked it
+    are satisfied incurs a high overhead due to unnecessary page eviction
+    and writeback, as well as spurious VM pressure events to various
+    registered shrinkers. When kswapd doesn't need to work to make an
+    allocation succeed anymore, stop it prematurely to save resources.
+
+    Signed-off-by: Sultan Alsawaf <sultan@kerneltoast.com>
+
+  - mm: Don't stop kswapd on a per-node basis when there are no waiters
+
+    The page allocator wakes all kswapds in an allocation context's allowed
+    nodemask in the slow path, so it doesn't make sense to have the kswapd-
+    waiter count per each NUMA node. Instead, it should be a global counter
+    to stop all kswapds when there are no failed allocation requests.
+
+    Signed-off-by: Sultan Alsawaf <sultan@kerneltoast.com>
+
+  - mm: Increment kswapd_waiters for throttled direct reclaimers
+
+    Throttled direct reclaimers will wake up kswapd and wait for kswapd to
+    satisfy their page allocation request, even when the failed allocation
+    lacks the __GFP_KSWAPD_RECLAIM flag in its gfp mask. As a result, kswapd
+    may think that there are no waiters and thus exit prematurely, causing
+    throttled direct reclaimers lacking __GFP_KSWAPD_RECLAIM to stall on
+    waiting for kswapd to wake them up. Incrementing the kswapd_waiters
+    counter when such direct reclaimers become throttled fixes the problem.
+
+    Signed-off-by: Sultan Alsawaf <sultan@kerneltoast.com>
+
+
 sched/core: add some branch hints based on gcov analysis
 
 Signed-off-by: Colin Ian King <colin.king@intel.com>
@@ -110,8 +145,18 @@ clear: init/init_task: Tweak timer_slack value
 
 Signed-off-by: Eric Naim <dnaim@cachyos.org>
 
+initcall: only print non-zero initcall debug to speed up boot
+
+Printing initcall timings that successfully return after 0 usecs
+provides not much useful information and takes a small amount of time
+to do so. Disable the initcall timings for these specific cases. On
+an Alderlake i9-12900 this reduces kernel boot time by 0.67% (timed
+up to the invocation of systemd starting) based on 10 boot measurements.
+
+Signed-off-by: Colin Ian King <colin.king@intel.com>
+
 diff --git a/arch/x86/include/asm/topology.h b/arch/x86/include/asm/topology.h
-index abe3a8f22cbd..cf975edeb61b 100644
+index 92f3664dd933b..a9bbadb21d9ed 100644
 --- a/arch/x86/include/asm/topology.h
 +++ b/arch/x86/include/asm/topology.h
 @@ -245,6 +245,7 @@ extern unsigned int __read_mostly sysctl_sched_itmt_enabled;
@@ -123,7 +168,7 @@ index abe3a8f22cbd..cf975edeb61b 100644
  /* Interface to notify scheduler that system supports ITMT */
  int sched_set_itmt_support(void);
 diff --git a/arch/x86/kernel/cpu/intel_epb.c b/arch/x86/kernel/cpu/intel_epb.c
-index 30b1d63b97f3..fe0f6e2bb297 100644
+index 30b1d63b97f3a..fe0f6e2bb2976 100644
 --- a/arch/x86/kernel/cpu/intel_epb.c
 +++ b/arch/x86/kernel/cpu/intel_epb.c
 @@ -166,6 +166,10 @@ static ssize_t energy_perf_bias_store(struct device *dev,
@@ -138,7 +183,7 @@ index 30b1d63b97f3..fe0f6e2bb297 100644
  }
  
 diff --git a/arch/x86/kernel/itmt.c b/arch/x86/kernel/itmt.c
-index 51b805c727fc..81e7cf72e83d 100644
+index 51b805c727fc8..81e7cf72e83d7 100644
 --- a/arch/x86/kernel/itmt.c
 +++ b/arch/x86/kernel/itmt.c
 @@ -25,6 +25,7 @@
@@ -189,10 +234,10 @@ index 51b805c727fc..81e7cf72e83d 100644
 +	}
 +}
 diff --git a/arch/x86/kernel/tsc.c b/arch/x86/kernel/tsc.c
-index d4462fb26299..f73fe50dc86a 100644
+index dfe6847fd99e5..8bc41b2ac6c3a 100644
 --- a/arch/x86/kernel/tsc.c
 +++ b/arch/x86/kernel/tsc.c
-@@ -1594,6 +1594,9 @@ unsigned long calibrate_delay_is_known(void)
+@@ -1592,6 +1592,9 @@ unsigned long calibrate_delay_is_known(void)
  	if (!constant_tsc || !mask)
  		return 0;
  
@@ -203,7 +248,7 @@ index d4462fb26299..f73fe50dc86a 100644
  	if (sibling < nr_cpu_ids)
  		return cpu_data(sibling).loops_per_jiffy;
 diff --git a/drivers/acpi/osl.c b/drivers/acpi/osl.c
-index 70af3fbbebe5..dab3d5089635 100644
+index 70af3fbbebe54..dab3d50896351 100644
 --- a/drivers/acpi/osl.c
 +++ b/drivers/acpi/osl.c
 @@ -1549,7 +1549,7 @@ void acpi_os_release_lock(acpi_spinlock lockp, acpi_cpu_flags not_used)
@@ -216,10 +261,10 @@ index 70af3fbbebe5..dab3d5089635 100644
  		return AE_ERROR;
  	else
 diff --git a/drivers/clocksource/acpi_pm.c b/drivers/clocksource/acpi_pm.c
-index 82338773602c..d84f0e29452e 100644
+index b4330a01a566b..e41cd5c688553 100644
 --- a/drivers/clocksource/acpi_pm.c
 +++ b/drivers/clocksource/acpi_pm.c
-@@ -176,13 +176,16 @@ static int verify_pmtmr_rate(void)
+@@ -208,13 +208,16 @@ static int verify_pmtmr_rate(void)
  static int __init init_acpi_pm_clocksource(void)
  {
  	u64 value1, value2;
@@ -239,10 +284,10 @@ index 82338773602c..d84f0e29452e 100644
  		value1 = clocksource_acpi_pm.read(&clocksource_acpi_pm);
  		for (i = 0; i < ACPI_PM_READ_CHECKS; i++) {
 diff --git a/drivers/cpufreq/intel_pstate.c b/drivers/cpufreq/intel_pstate.c
-index 949ead440da9..e92fc7787487 100644
+index 400337f3b572d..d158197677c90 100644
 --- a/drivers/cpufreq/intel_pstate.c
 +++ b/drivers/cpufreq/intel_pstate.c
-@@ -372,6 +372,13 @@ static void intel_pstate_set_itmt_prio(int cpu)
+@@ -376,6 +376,13 @@ static void intel_pstate_set_itmt_prio(int cpu)
  	 * update them at any time after it has been called.
  	 */
  	sched_set_itmt_core_prio(cppc_perf.highest_perf, cpu);
@@ -257,7 +302,7 @@ index 949ead440da9..e92fc7787487 100644
  	if (max_highest_perf <= min_highest_perf) {
  		if (cppc_perf.highest_perf > max_highest_perf)
 diff --git a/drivers/net/dummy.c b/drivers/net/dummy.c
-index d29b5d7af0d7..25cc933274e9 100644
+index e9c5e1e11fa02..d912cdbd26a4d 100644
 --- a/drivers/net/dummy.c
 +++ b/drivers/net/dummy.c
 @@ -43,7 +43,7 @@
@@ -270,7 +315,7 @@ index d29b5d7af0d7..25cc933274e9 100644
  /* fake multicast ability */
  static void set_multicast_list(struct net_device *dev)
 diff --git a/fs/binfmt_elf.c b/fs/binfmt_elf.c
-index 19fa49cd9907..fe8f0987fe7c 100644
+index 06dc4a57ba78a..fef929ddfe595 100644
 --- a/fs/binfmt_elf.c
 +++ b/fs/binfmt_elf.c
 @@ -1281,6 +1281,8 @@ static int load_elf_binary(struct linux_binprm *bprm)
@@ -283,10 +328,10 @@ index 19fa49cd9907..fe8f0987fe7c 100644
  	mm->end_data = end_data;
  	mm->start_stack = bprm->p;
 diff --git a/include/net/sock.h b/include/net/sock.h
-index 2d4149075091..c036131cfac6 100644
+index f29c144489387..2fbdb4a78e459 100644
 --- a/include/net/sock.h
 +++ b/include/net/sock.h
-@@ -1571,10 +1571,17 @@ static inline void sk_mem_charge(struct sock *sk, int size)
+@@ -1573,10 +1573,17 @@ static inline void sk_mem_charge(struct sock *sk, int size)
  
  static inline void sk_mem_uncharge(struct sock *sk, int size)
  {
@@ -305,7 +350,7 @@ index 2d4149075091..c036131cfac6 100644
  }
  
  /*
-@@ -2800,7 +2807,7 @@ void sk_get_meminfo(const struct sock *sk, u32 *meminfo);
+@@ -2807,7 +2814,7 @@ void sk_get_meminfo(const struct sock *sk, u32 *meminfo);
   * platforms.  This makes socket queueing behavior and performance
   * not depend upon such differences.
   */
@@ -315,7 +360,7 @@ index 2d4149075091..c036131cfac6 100644
  #define SK_WMEM_MAX		(_SK_MEM_OVERHEAD * _SK_MEM_PACKETS)
  #define SK_RMEM_MAX		(_SK_MEM_OVERHEAD * _SK_MEM_PACKETS)
 diff --git a/include/uapi/linux/if_bonding.h b/include/uapi/linux/if_bonding.h
-index d174914a837d..bf8e2af101a3 100644
+index d174914a837db..bf8e2af101a3c 100644
 --- a/include/uapi/linux/if_bonding.h
 +++ b/include/uapi/linux/if_bonding.h
 @@ -82,7 +82,7 @@
@@ -328,10 +373,10 @@ index d174914a837d..bf8e2af101a3 100644
  #define BOND_DEFAULT_TX_QUEUES 16   /* Default number of tx queues per device */
  
 diff --git a/init/init_task.c b/init/init_task.c
-index eeb110c65fe2..c931d5566445 100644
+index 136a8231355ab..15d7392020cae 100644
 --- a/init/init_task.c
 +++ b/init/init_task.c
-@@ -127,7 +127,7 @@ struct task_struct init_task __aligned(L1_CACHE_BYTES) = {
+@@ -139,7 +139,7 @@ struct task_struct init_task __aligned(L1_CACHE_BYTES) = {
  	.journal_info	= NULL,
  	INIT_CPU_TIMERS(init_task)
  	.pi_lock	= __RAW_SPIN_LOCK_UNLOCKED(init_task.pi_lock),
@@ -340,11 +385,31 @@ index eeb110c65fe2..c931d5566445 100644
  	.thread_pid	= &init_struct_pid,
  	.thread_node	= LIST_HEAD_INIT(init_signals.thread_head),
  #ifdef CONFIG_AUDIT
+diff --git a/init/main.c b/init/main.c
+index c4778edae7972..f5128cc7b34bf 100644
+--- a/init/main.c
++++ b/init/main.c
+@@ -1220,10 +1220,13 @@ static __init_or_module void
+ trace_initcall_finish_cb(void *data, initcall_t fn, int ret)
+ {
+ 	ktime_t rettime, *calltime = data;
++	long long delta;
+ 
+ 	rettime = ktime_get();
+-	printk(KERN_DEBUG "initcall %pS returned %d after %lld usecs\n",
+-		 fn, ret, (unsigned long long)ktime_us_delta(rettime, *calltime));
++	delta = ktime_us_delta(rettime, *calltime);
++	if (ret || delta)
++		printk(KERN_DEBUG "initcall %pS returned %d after %lld usecs\n",
++			fn, ret, (unsigned long long)ktime_us_delta(rettime, *calltime));
+ }
+ 
+ static ktime_t initcall_calltime;
 diff --git a/kernel/sched/core.c b/kernel/sched/core.c
-index 1af59cf714cd..2c6bc4136dbf 100644
+index a1c353a62c568..d0d3d21fdd065 100644
 --- a/kernel/sched/core.c
 +++ b/kernel/sched/core.c
-@@ -556,7 +556,7 @@ void raw_spin_rq_lock_nested(struct rq *rq, int subclass)
+@@ -594,7 +594,7 @@ void raw_spin_rq_lock_nested(struct rq *rq, int subclass)
  
  	/* Matches synchronize_rcu() in __sched_core_enable() */
  	preempt_disable();
@@ -353,7 +418,7 @@ index 1af59cf714cd..2c6bc4136dbf 100644
  		raw_spin_lock_nested(&rq->__lock, subclass);
  		/* preempt_count *MUST* be > 1 */
  		preempt_enable_no_resched();
-@@ -764,7 +764,7 @@ void update_rq_clock(struct rq *rq)
+@@ -802,7 +802,7 @@ void update_rq_clock(struct rq *rq)
  #endif
  
  	delta = sched_clock_cpu(cpu_of(rq)) - rq->clock;
@@ -362,7 +427,7 @@ index 1af59cf714cd..2c6bc4136dbf 100644
  		return;
  	rq->clock += delta;
  	update_rq_clock_task(rq, delta);
-@@ -5905,7 +5905,7 @@ pick_next_task(struct rq *rq, struct task_struct *prev, struct rq_flags *rf)
+@@ -6052,7 +6052,7 @@ pick_next_task(struct rq *rq, struct task_struct *prev, struct rq_flags *rf)
  	struct rq *rq_i;
  	bool need_sync;
  
@@ -371,7 +436,7 @@ index 1af59cf714cd..2c6bc4136dbf 100644
  		return __pick_next_task(rq, prev, rf);
  
  	cpu = cpu_of(rq);
-@@ -7044,7 +7044,7 @@ void rt_mutex_setprio(struct task_struct *p, struct task_struct *pi_task)
+@@ -7213,7 +7213,7 @@ void rt_mutex_setprio(struct task_struct *p, struct task_struct *pi_task)
  #if !defined(CONFIG_PREEMPTION) || defined(CONFIG_PREEMPT_DYNAMIC)
  int __sched __cond_resched(void)
  {
@@ -381,10 +446,10 @@ index 1af59cf714cd..2c6bc4136dbf 100644
  		return 1;
  	}
 diff --git a/kernel/sched/fair.c b/kernel/sched/fair.c
-index 1d2cbdb162a6..691e8d5f74de 100644
+index 2d16c8545c71e..f99789aea35d8 100644
 --- a/kernel/sched/fair.c
 +++ b/kernel/sched/fair.c
-@@ -12423,7 +12423,7 @@ static int sched_balance_newidle(struct rq *this_rq, struct rq_flags *rf)
+@@ -12787,7 +12787,7 @@ static int sched_balance_newidle(struct rq *this_rq, struct rq_flags *rf)
  
  		update_next_balance(sd, &next_balance);
  
@@ -394,7 +459,7 @@ index 1d2cbdb162a6..691e8d5f74de 100644
  
  		if (sd->flags & SD_BALANCE_NEWIDLE) {
 diff --git a/lib/raid6/algos.c b/lib/raid6/algos.c
-index cd2e88ee1f14..b846635542bc 100644
+index cd2e88ee1f148..b846635542bc6 100644
 --- a/lib/raid6/algos.c
 +++ b/lib/raid6/algos.c
 @@ -18,6 +18,8 @@
@@ -498,11 +563,70 @@ index cd2e88ee1f14..b846635542bc 100644
  out:
  	return best;
  }
+diff --git a/mm/internal.h b/mm/internal.h
+index 64c2eb0b160e1..74340d183e360 100644
+--- a/mm/internal.h
++++ b/mm/internal.h
+@@ -739,6 +739,7 @@ extern void post_alloc_hook(struct page *page, unsigned int order,
+ extern bool free_pages_prepare(struct page *page, unsigned int order);
+ 
+ extern int user_min_free_kbytes;
++extern atomic_long_t kswapd_waiters;
+ 
+ void free_unref_page(struct page *page, unsigned int order);
+ void free_unref_folios(struct folio_batch *fbatch);
 diff --git a/mm/page_alloc.c b/mm/page_alloc.c
-index 91ace8ca97e2..185430f5bc3b 100644
+index b6958333054d0..f3b3bffc41a0c 100644
 --- a/mm/page_alloc.c
 +++ b/mm/page_alloc.c
-@@ -5478,11 +5478,11 @@ static int zone_batchsize(struct zone *zone)
+@@ -88,6 +88,8 @@ typedef int __bitwise fpi_t;
+  */
+ #define FPI_TO_TAIL		((__force fpi_t)BIT(1))
+ 
++atomic_long_t kswapd_waiters = ATOMIC_LONG_INIT(0);
++
+ /* prevent >1 _updater_ of zone percpu pageset ->high and ->batch fields */
+ static DEFINE_MUTEX(pcp_batch_high_lock);
+ #define MIN_PERCPU_PAGELIST_HIGH_FRACTION (8)
+@@ -4218,6 +4220,7 @@ __alloc_pages_slowpath(gfp_t gfp_mask, unsigned int order,
+ 	unsigned int cpuset_mems_cookie;
+ 	unsigned int zonelist_iter_cookie;
+ 	int reserve_flags;
++	bool woke_kswapd = false;
+ 
+ 	if (unlikely(nofail)) {
+ 		/*
+@@ -4276,8 +4279,13 @@ __alloc_pages_slowpath(gfp_t gfp_mask, unsigned int order,
+ 			goto nopage;
+ 	}
+ 
+-	if (alloc_flags & ALLOC_KSWAPD)
++	if (alloc_flags & ALLOC_KSWAPD) {
++		if (!woke_kswapd) {
++			atomic_long_inc(&kswapd_waiters);
++			woke_kswapd = true;
++		}
+ 		wake_all_kswapds(order, gfp_mask, ac);
++	}
+ 
+ 	/*
+ 	 * The adjusted alloc_flags might result in immediate success, so try
+@@ -4479,9 +4487,12 @@ __alloc_pages_slowpath(gfp_t gfp_mask, unsigned int order,
+ 		goto retry;
+ 	}
+ fail:
+-	warn_alloc(gfp_mask, ac->nodemask,
+-			"page allocation failure: order:%u", order);
+ got_pg:
++	if (woke_kswapd)
++		atomic_long_dec(&kswapd_waiters);
++	if (!page)
++		warn_alloc(gfp_mask, ac->nodemask,
++				"page allocation failure: order:%u", order);
+ 	return page;
+ }
+ 
+@@ -5527,11 +5538,11 @@ static int zone_batchsize(struct zone *zone)
  
  	/*
  	 * The number of pages to batch allocate is either ~0.1%
@@ -516,3 +640,70 @@ index 91ace8ca97e2..185430f5bc3b 100644
  	batch /= 4;		/* We effectively *= 4 below */
  	if (batch < 1)
  		batch = 1;
+diff --git a/mm/vmscan.c b/mm/vmscan.c
+index 28ba2b06fc7dc..692ad5f7200ef 100644
+--- a/mm/vmscan.c
++++ b/mm/vmscan.c
+@@ -6346,7 +6346,7 @@ static unsigned long do_try_to_free_pages(struct zonelist *zonelist,
+ 	return 0;
+ }
+ 
+-static bool allow_direct_reclaim(pg_data_t *pgdat)
++static bool allow_direct_reclaim(pg_data_t *pgdat, bool using_kswapd)
+ {
+ 	struct zone *zone;
+ 	unsigned long pfmemalloc_reserve = 0;
+@@ -6375,6 +6375,10 @@ static bool allow_direct_reclaim(pg_data_t *pgdat)
+ 
+ 	wmark_ok = free_pages > pfmemalloc_reserve / 2;
+ 
++	/* The throttled direct reclaimer is now a kswapd waiter */
++	if (unlikely(!using_kswapd && !wmark_ok))
++		atomic_long_inc(&kswapd_waiters);
++
+ 	/* kswapd must be awake if processes are being throttled */
+ 	if (!wmark_ok && waitqueue_active(&pgdat->kswapd_wait)) {
+ 		if (READ_ONCE(pgdat->kswapd_highest_zoneidx) > ZONE_NORMAL)
+@@ -6440,7 +6444,7 @@ static bool throttle_direct_reclaim(gfp_t gfp_mask, struct zonelist *zonelist,
+ 
+ 		/* Throttle based on the first usable node */
+ 		pgdat = zone->zone_pgdat;
+-		if (allow_direct_reclaim(pgdat))
++		if (allow_direct_reclaim(pgdat, gfp_mask & __GFP_KSWAPD_RECLAIM))
+ 			goto out;
+ 		break;
+ 	}
+@@ -6462,11 +6466,14 @@ static bool throttle_direct_reclaim(gfp_t gfp_mask, struct zonelist *zonelist,
+ 	 */
+ 	if (!(gfp_mask & __GFP_FS))
+ 		wait_event_interruptible_timeout(pgdat->pfmemalloc_wait,
+-			allow_direct_reclaim(pgdat), HZ);
++			allow_direct_reclaim(pgdat, true), HZ);
+ 	else
+ 		/* Throttle until kswapd wakes the process */
+ 		wait_event_killable(zone->zone_pgdat->pfmemalloc_wait,
+-			allow_direct_reclaim(pgdat));
++			allow_direct_reclaim(pgdat, true));
++
++	if (unlikely(!(gfp_mask & __GFP_KSWAPD_RECLAIM)))
++		atomic_long_dec(&kswapd_waiters);
+ 
+ 	if (fatal_signal_pending(current))
+ 		return true;
+@@ -6969,14 +6976,14 @@ static int balance_pgdat(pg_data_t *pgdat, int order, int highest_zoneidx)
+ 		 * able to safely make forward progress. Wake them
+ 		 */
+ 		if (waitqueue_active(&pgdat->pfmemalloc_wait) &&
+-				allow_direct_reclaim(pgdat))
++				allow_direct_reclaim(pgdat, true))
+ 			wake_up_all(&pgdat->pfmemalloc_wait);
+ 
+ 		/* Check if kswapd should be suspending */
+ 		__fs_reclaim_release(_THIS_IP_);
+ 		ret = kthread_freezable_should_stop(&was_frozen);
+ 		__fs_reclaim_acquire(_THIS_IP_);
+-		if (was_frozen || ret)
++		if (was_frozen || ret || !atomic_long_read(&kswapd_waiters))
+ 			break;
+ 
+ 		/*
