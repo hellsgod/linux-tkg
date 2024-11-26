@@ -523,6 +523,75 @@ Align them for clarity.
 Signed-off-by: Thomas Weißschuh <thomas.weissschuh@linutronix.de>
 Signed-off-by: Eric Naim <dnaim@cachyos.org>
 
+
+futex: improve user space accesses
+
+Josh Poimboeuf reports that he got a "will-it-scale.per_process_ops 1.9%
+improvement" report for his patch that changed __get_user() to use
+pointer masking instead of the explicit speculation barrier.  However,
+that patch doesn't actually work in the general case, because some (very
+bad) architecture-specific code actually depends on __get_user() also
+working on kernel addresses.
+
+A profile showed that the offending __get_user() was the futex code,
+which really should be fixed up to not use that horrid legacy case.
+Rewrite futex_get_value_locked() to use the modern user acccess helpers,
+and inline it so that the compiler not only avoids the function call for
+a few instructions, but can do CSE on the address masking.
+
+It also turns out the x86 futex functions have unnecessary barriers in
+other places, so let's fix those up too.
+
+Link: https://lore.kernel.org/all/20241115230653.hfvzyf3aqqntgp63@jpoimboe/
+Reported-by: Josh Poimboeuf <jpoimboe@kernel.org>
+Signed-off-by: Linus Torvalds <torvalds@linux-foundation.org>
+
+
+x86: fix off-by-one in access_ok()
+
+When the size isn't a small constant, __access_ok() will call
+valid_user_address() with the address after the last byte of the user
+buffer.
+
+It is valid for a buffer to end with the last valid user address so
+valid_user_address() must allow accesses to the base of the guard page.
+
+[ This introduces an off-by-one in the other direction for the plain
+  non-sized accesses, but since we have that guard region that is a
+  whole page, those checks "allowing" accesses to that guard region
+  don't really matter. The access will fault anyway, whether to the
+  guard page or if the address has been masked to all ones - Linus ]
+
+Fixes: 86e6b1547b3d0 ("x86: fix user address masking non-canonical speculation issue")
+Signed-off-by: David Laight <david.laight@aculab.com>
+Signed-off-by: Linus Torvalds <torvalds@linux-foundation.org>
+
+diff --git a/arch/x86/include/asm/futex.h b/arch/x86/include/asm/futex.h
+index 99d345b686fa2..6e2458088800a 100644
+--- a/arch/x86/include/asm/futex.h
++++ b/arch/x86/include/asm/futex.h
+@@ -48,7 +48,9 @@ do {								\
+ static __always_inline int arch_futex_atomic_op_inuser(int op, int oparg, int *oval,
+ 		u32 __user *uaddr)
+ {
+-	if (!user_access_begin(uaddr, sizeof(u32)))
++	if (can_do_masked_user_access())
++		uaddr = masked_user_access_begin(uaddr);
++	else if (!user_access_begin(uaddr, sizeof(u32)))
+ 		return -EFAULT;
+ 
+ 	switch (op) {
+@@ -84,7 +86,9 @@ static inline int futex_atomic_cmpxchg_inatomic(u32 *uval, u32 __user *uaddr,
+ {
+ 	int ret = 0;
+ 
+-	if (!user_access_begin(uaddr, sizeof(u32)))
++	if (can_do_masked_user_access())
++		uaddr = masked_user_access_begin(uaddr);
++	else if (!user_access_begin(uaddr, sizeof(u32)))
+ 		return -EFAULT;
+ 	asm volatile("\n"
+ 		"1:\t" LOCK_PREFIX "cmpxchgl %3, %2\n"
 diff --git a/arch/x86/include/asm/kvm_host.h b/arch/x86/include/asm/kvm_host.h
 index 6d9f763a7bb9d..d6657cc0fe6b1 100644
 --- a/arch/x86/include/asm/kvm_host.h
@@ -578,6 +647,25 @@ index d17518ca19b8b..8b66a555d2f03 100644
  static void text_poke_memcpy(void *dst, const void *src, size_t len)
  {
  	memcpy(dst, src, len);
+diff --git a/arch/x86/kernel/cpu/common.c b/arch/x86/kernel/cpu/common.c
+index f43bb974fc66d..b17bcf9b67eed 100644
+--- a/arch/x86/kernel/cpu/common.c
++++ b/arch/x86/kernel/cpu/common.c
+@@ -2392,12 +2392,12 @@ void __init arch_cpu_finalize_init(void)
+ 	alternative_instructions();
+ 
+ 	if (IS_ENABLED(CONFIG_X86_64)) {
+-		unsigned long USER_PTR_MAX = TASK_SIZE_MAX-1;
++		unsigned long USER_PTR_MAX = TASK_SIZE_MAX;
+ 
+ 		/*
+ 		 * Enable this when LAM is gated on LASS support
+ 		if (cpu_feature_enabled(X86_FEATURE_LAM))
+-			USER_PTR_MAX = (1ul << 63) - PAGE_SIZE - 1;
++			USER_PTR_MAX = (1ul << 63) - PAGE_SIZE;
+ 		 */
+ 		runtime_const_init(ptr, USER_PTR_MAX);
+ 
 diff --git a/arch/x86/kvm/Kconfig b/arch/x86/kvm/Kconfig
 index f09f13c01c6bb..b387d61af44f1 100644
 --- a/arch/x86/kvm/Kconfig
@@ -3472,6 +3560,118 @@ index c521e1421ad4a..3e5c7b54a8ce7 100644
  config PAHOLE_VERSION
  	int
  	default $(shell,$(srctree)/scripts/pahole-version.sh $(PAHOLE))
+diff --git a/kernel/futex/core.c b/kernel/futex/core.c
+index 136768ae26375..9107704a65744 100644
+--- a/kernel/futex/core.c
++++ b/kernel/futex/core.c
+@@ -451,28 +451,6 @@ struct futex_q *futex_top_waiter(struct futex_hash_bucket *hb, union futex_key *
+ 	return NULL;
+ }
+ 
+-int futex_cmpxchg_value_locked(u32 *curval, u32 __user *uaddr, u32 uval, u32 newval)
+-{
+-	int ret;
+-
+-	pagefault_disable();
+-	ret = futex_atomic_cmpxchg_inatomic(curval, uaddr, uval, newval);
+-	pagefault_enable();
+-
+-	return ret;
+-}
+-
+-int futex_get_value_locked(u32 *dest, u32 __user *from)
+-{
+-	int ret;
+-
+-	pagefault_disable();
+-	ret = __get_user(*dest, from);
+-	pagefault_enable();
+-
+-	return ret ? -EFAULT : 0;
+-}
+-
+ /**
+  * wait_for_owner_exiting - Block until the owner has exited
+  * @ret: owner's current futex lock status
+diff --git a/kernel/futex/futex.h b/kernel/futex/futex.h
+index 8b195d06f4e8e..618ce1fe870e9 100644
+--- a/kernel/futex/futex.h
++++ b/kernel/futex/futex.h
+@@ -6,6 +6,7 @@
+ #include <linux/rtmutex.h>
+ #include <linux/sched/wake_q.h>
+ #include <linux/compat.h>
++#include <linux/uaccess.h>
+ 
+ #ifdef CONFIG_PREEMPT_RT
+ #include <linux/rcuwait.h>
+@@ -225,10 +226,64 @@ extern bool __futex_wake_mark(struct futex_q *q);
+ extern void futex_wake_mark(struct wake_q_head *wake_q, struct futex_q *q);
+ 
+ extern int fault_in_user_writeable(u32 __user *uaddr);
+-extern int futex_cmpxchg_value_locked(u32 *curval, u32 __user *uaddr, u32 uval, u32 newval);
+-extern int futex_get_value_locked(u32 *dest, u32 __user *from);
+ extern struct futex_q *futex_top_waiter(struct futex_hash_bucket *hb, union futex_key *key);
+ 
++static inline int futex_cmpxchg_value_locked(u32 *curval, u32 __user *uaddr, u32 uval, u32 newval)
++{
++	int ret;
++
++	pagefault_disable();
++	ret = futex_atomic_cmpxchg_inatomic(curval, uaddr, uval, newval);
++	pagefault_enable();
++
++	return ret;
++}
++
++/*
++ * This does a plain atomic user space read, and the user pointer has
++ * already been verified earlier by get_futex_key() to be both aligned
++ * and actually in user space, just like futex_atomic_cmpxchg_inatomic().
++ *
++ * We still want to avoid any speculation, and while __get_user() is
++ * the traditional model for this, it's actually slower than doing
++ * this manually these days.
++ *
++ * We could just have a per-architecture special function for it,
++ * the same way we do futex_atomic_cmpxchg_inatomic(), but rather
++ * than force everybody to do that, write it out long-hand using
++ * the low-level user-access infrastructure.
++ *
++ * This looks a bit overkill, but generally just results in a couple
++ * of instructions.
++ */
++static __always_inline int futex_read_inatomic(u32 *dest, u32 __user *from)
++{
++	u32 val;
++
++	if (can_do_masked_user_access())
++		from = masked_user_access_begin(from);
++	else if (!user_read_access_begin(from, sizeof(*from)))
++		return -EFAULT;
++	unsafe_get_user(val, from, Efault);
++	user_access_end();
++	*dest = val;
++	return 0;
++Efault:
++	user_access_end();
++	return -EFAULT;
++}
++
++static inline int futex_get_value_locked(u32 *dest, u32 __user *from)
++{
++	int ret;
++
++	pagefault_disable();
++	ret = futex_read_inatomic(dest, from);
++	pagefault_enable();
++
++	return ret;
++}
++
+ extern void __futex_unqueue(struct futex_q *q);
+ extern void __futex_queue(struct futex_q *q, struct futex_hash_bucket *hb);
+ extern int futex_unqueue(struct futex_q *q);
 diff --git a/kernel/kprobes.c b/kernel/kprobes.c
 index da59c68df8412..55d0835ea0cf0 100644
 --- a/kernel/kprobes.c
