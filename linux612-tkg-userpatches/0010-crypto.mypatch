@@ -1,133 +1,8 @@
-crypto: x86/crc32c - simplify code for handling fewer than 200 bytes
-
-The assembly code in crc32c-pcl-intel-asm_64.S is invoked only for
-lengths >= 512, due to the overhead of saving and restoring FPU state.
-Therefore, it is unnecessary for this code to be excessively "optimized"
-for lengths < 200.  Eliminate the excessive unrolling of this part of
-the code and use a more straightforward qword-at-a-time loop.
-
-Note: the part of the code in question is not entirely redundant, as it
-is still used to process any remainder mod 24, as well as any remaining
-data when fewer than 200 bytes remain after least one 3072-byte chunk.
-
-Signed-off-by: Eric Biggers <ebiggers@google.com>
-
-
-crypto: x86/crc32c - access 32-bit arguments as 32-bit
-
-Fix crc32c-pcl-intel-asm_64.S to access 32-bit arguments as 32-bit
-values instead of 64-bit, since the upper bits of the corresponding
-64-bit registers are not guaranteed to be zero.  Also update the type of
-the length argument to be unsigned int rather than int, as the assembly
-code treats it as unsigned.
-
-Note: there haven't been any reports of this bug actually causing
-incorrect behavior.  Neither gcc nor clang guarantee zero-extension to
-64 bits, but zero-extension is likely to happen in practice because most
-instructions that operate on 32-bit registers zero-extend to 64 bits.
-
-Signed-off-by: Eric Biggers <ebiggers@google.com>
-
-
-crypto: x86/crc32c - eliminate jump table and excessive unrolling
-
-crc32c-pcl-intel-asm_64.S has a loop with 1 to 127 iterations fully
-unrolled and uses a jump table to jump into the correct location.  This
-optimization is misguided, as it bloats the binary code size and
-introduces an indirect call.  x86_64 CPUs can predict loops well, so it
-is fine to just use a loop instead.  Loop bookkeeping instructions can
-compete with the crc instructions for the ALUs, but this is easily
-mitigated by unrolling the loop by a smaller amount, such as 4 times.
-
-Therefore, re-roll the loop and make related tweaks to the code.
-
-This reduces the binary code size of crc_pclmul() from 4546 bytes to 418
-bytes, a 91% reduction.  In general it also makes the code faster, with
-some large improvements seen when retpoline is enabled.
-
-More detailed performance results are shown below.  They are given as
-percent improvement in throughput (negative means regressed) for CPU
-microarchitecture vs. input length in bytes.  E.g. an improvement from
-40 GB/s to 50 GB/s would be listed as 25%.
-
-Table 1: Results with retpoline enabled (the default):
-
-                       |   512 |   833 |  1024 |  2000 |  3173 |  4096 |
-  ---------------------+-------+-------+-------+------ +-------+-------+
-  Intel Haswell        | 35.0% | 20.7% | 17.8% |  9.7% | -0.2% |  4.4% |
-  Intel Emerald Rapids | 66.8% | 45.2% | 36.3% | 19.3% |  0.0% |  5.4% |
-  AMD Zen 2            | 29.5% | 17.2% | 13.5% |  8.6% | -0.5% |  2.8% |
-
-Table 2: Results with retpoline disabled:
-
-                       |   512 |   833 |  1024 |  2000 |  3173 |  4096 |
-  ---------------------+-------+-------+-------+------ +-------+-------+
-  Intel Haswell        |  3.3% |  4.8% |  4.5% |  0.9% | -2.9% |  0.3% |
-  Intel Emerald Rapids |  7.5% |  6.4% |  5.2% |  2.3% | -0.0% |  0.6% |
-  AMD Zen 2            | 11.8% |  1.4% |  0.2% |  1.3% | -0.9% | -0.2% |
-
-Signed-off-by: Eric Biggers <ebiggers@google.com>
-
-
-crypto: x86/aegis128 - access 32-bit arguments as 32-bit
-
-Fix the AEGIS assembly code to access 'unsigned int' arguments as 32-bit
-values instead of 64-bit, since the upper bits of the corresponding
-64-bit registers are not guaranteed to be zero.
-
-Note: there haven't been any reports of this bug actually causing
-incorrect behavior.  Neither gcc nor clang guarantee zero-extension to
-64 bits, but zero-extension is likely to happen in practice because most
-instructions that operate on 32-bit registers zero-extend to 64 bits.
-
-Fixes: 1d373d4e8e15 ("crypto: x86 - Add optimized AEGIS implementations")
-Cc: stable@vger.kernel.org
-Reviewed-by: Ondrej Mosnacek <omosnace@redhat.com>
-Signed-off-by: Eric Biggers <ebiggers@google.com>
-
-
-crypto: x86/aegis128 - remove no-op init and exit functions
-
-Don't bother providing empty stubs for the init and exit methods in
-struct aead_alg, since they are optional anyway.
-
-Reviewed-by: Ondrej Mosnacek <omosnace@redhat.com>
-Signed-off-by: Eric Biggers <ebiggers@google.com>
-
-
-crypto: x86/aegis128 - eliminate some indirect calls
-
-Instead of using a struct of function pointers to decide whether to call
-the encryption or decryption assembly functions, use a conditional
-branch on a bool.  Force-inline the functions to avoid actually
-generating the branch.  This improves performance slightly since
-indirect calls are slow.  Remove the now-unnecessary CFI stubs.
-
-Note that just force-inlining the existing functions might cause the
-compiler to optimize out the indirect branches, but that would not be a
-reliable way to do it and the CFI stubs would still be required.
-
-Reviewed-by: Ondrej Mosnacek <omosnace@redhat.com>
-Signed-off-by: Eric Biggers <ebiggers@google.com>
-
-
-crypto: x86/aegis128 - don't bother with special code for aligned data
-
-Remove the AEGIS assembly code paths that were "optimized" to operate on
-16-byte aligned data using movdqa, and instead just use the code paths
-that use movdqu and can handle data with any alignment.
-
-This does not reduce performance.  movdqa is basically a historical
-artifact; on aligned data, movdqu and movdqa have had the same
-performance since Intel Nehalem (2008) and AMD Bulldozer (2011).  And
-code that requires AES-NI cannot run on CPUs older than those anyway.
-
-Reviewed-by: Ondrej Mosnacek <omosnace@redhat.com>
-Signed-off-by: Eric Biggers <ebiggers@google.com>
+https://github.com/hellsgod/linux/tree/6.12-crypto-next
 
 
 diff --git a/MAINTAINERS b/MAINTAINERS
-index b878ddc99f94e..a1a7c9f3489ad 100644
+index 6bb4ec0c162a..7c1ce0408a8d 100644
 --- a/MAINTAINERS
 +++ b/MAINTAINERS
 @@ -5986,6 +5986,17 @@ S:	Maintained
@@ -149,7 +24,7 @@ index b878ddc99f94e..a1a7c9f3489ad 100644
  M:	Bastien Nocera <hadess@hadess.net>
  L:	linux-input@vger.kernel.org
 diff --git a/arch/arm64/Kconfig b/arch/arm64/Kconfig
-index 22f8a7bca6d21..08cf1723bf6ea 100644
+index 22f8a7bca6d2..08cf1723bf6e 100644
 --- a/arch/arm64/Kconfig
 +++ b/arch/arm64/Kconfig
 @@ -21,6 +21,7 @@ config ARM64
@@ -162,7 +37,7 @@ index 22f8a7bca6d21..08cf1723bf6ea 100644
  	select ARCH_HAS_DEBUG_VM_PGTABLE
 diff --git a/arch/arm64/lib/Makefile b/arch/arm64/lib/Makefile
 deleted file mode 100644
-index 13e6a2829116c..0000000000000
+index 13e6a2829116..000000000000
 --- a/arch/arm64/lib/Makefile
 +++ /dev/null
 @@ -1,22 +0,0 @@
@@ -189,7 +64,7 @@ index 13e6a2829116c..0000000000000
 -
 -obj-$(CONFIG_KASAN_SW_TAGS) += kasan_sw_tags.o
 diff --git a/arch/m68k/configs/amiga_defconfig b/arch/m68k/configs/amiga_defconfig
-index d01dc47d52ea2..6b6fb07e14dd2 100644
+index d01dc47d52ea..6b6fb07e14dd 100644
 --- a/arch/m68k/configs/amiga_defconfig
 +++ b/arch/m68k/configs/amiga_defconfig
 @@ -607,7 +607,6 @@ CONFIG_CRYPTO_USER_API_RNG=m
@@ -201,7 +76,7 @@ index d01dc47d52ea2..6b6fb07e14dd2 100644
  CONFIG_GLOB_SELFTEST=m
  # CONFIG_SECTION_MISMATCH_WARN_ONLY is not set
 diff --git a/arch/m68k/configs/apollo_defconfig b/arch/m68k/configs/apollo_defconfig
-index 46808e581d7b4..59ed22cefdc90 100644
+index 46808e581d7b..59ed22cefdc9 100644
 --- a/arch/m68k/configs/apollo_defconfig
 +++ b/arch/m68k/configs/apollo_defconfig
 @@ -564,7 +564,6 @@ CONFIG_CRYPTO_USER_API_RNG=m
@@ -213,7 +88,7 @@ index 46808e581d7b4..59ed22cefdc90 100644
  CONFIG_GLOB_SELFTEST=m
  # CONFIG_SECTION_MISMATCH_WARN_ONLY is not set
 diff --git a/arch/m68k/configs/atari_defconfig b/arch/m68k/configs/atari_defconfig
-index 4469a7839c9d1..665fc6ee01610 100644
+index 4469a7839c9d..665fc6ee0161 100644
 --- a/arch/m68k/configs/atari_defconfig
 +++ b/arch/m68k/configs/atari_defconfig
 @@ -584,7 +584,6 @@ CONFIG_CRYPTO_USER_API_RNG=m
@@ -225,7 +100,7 @@ index 4469a7839c9d1..665fc6ee01610 100644
  CONFIG_GLOB_SELFTEST=m
  # CONFIG_SECTION_MISMATCH_WARN_ONLY is not set
 diff --git a/arch/m68k/configs/bvme6000_defconfig b/arch/m68k/configs/bvme6000_defconfig
-index c0719322c0283..f8f5cc13cc44c 100644
+index c0719322c028..f8f5cc13cc44 100644
 --- a/arch/m68k/configs/bvme6000_defconfig
 +++ b/arch/m68k/configs/bvme6000_defconfig
 @@ -556,7 +556,6 @@ CONFIG_CRYPTO_USER_API_RNG=m
@@ -237,7 +112,7 @@ index c0719322c0283..f8f5cc13cc44c 100644
  CONFIG_GLOB_SELFTEST=m
  # CONFIG_SECTION_MISMATCH_WARN_ONLY is not set
 diff --git a/arch/m68k/configs/hp300_defconfig b/arch/m68k/configs/hp300_defconfig
-index 8d429e63f8f21..12a959a1fa627 100644
+index 8d429e63f8f2..12a959a1fa62 100644
 --- a/arch/m68k/configs/hp300_defconfig
 +++ b/arch/m68k/configs/hp300_defconfig
 @@ -566,7 +566,6 @@ CONFIG_CRYPTO_USER_API_RNG=m
@@ -249,7 +124,7 @@ index 8d429e63f8f21..12a959a1fa627 100644
  CONFIG_GLOB_SELFTEST=m
  # CONFIG_SECTION_MISMATCH_WARN_ONLY is not set
 diff --git a/arch/m68k/configs/mac_defconfig b/arch/m68k/configs/mac_defconfig
-index bafd33da27c11..8cc98c7a0e3c4 100644
+index bafd33da27c1..8cc98c7a0e3c 100644
 --- a/arch/m68k/configs/mac_defconfig
 +++ b/arch/m68k/configs/mac_defconfig
 @@ -583,7 +583,6 @@ CONFIG_CRYPTO_USER_API_RNG=m
@@ -261,7 +136,7 @@ index bafd33da27c11..8cc98c7a0e3c4 100644
  CONFIG_GLOB_SELFTEST=m
  # CONFIG_SECTION_MISMATCH_WARN_ONLY is not set
 diff --git a/arch/m68k/configs/multi_defconfig b/arch/m68k/configs/multi_defconfig
-index 6f5ca3f85ea16..39729e9457e94 100644
+index 6f5ca3f85ea1..39729e9457e9 100644
 --- a/arch/m68k/configs/multi_defconfig
 +++ b/arch/m68k/configs/multi_defconfig
 @@ -669,7 +669,6 @@ CONFIG_CRYPTO_USER_API_RNG=m
@@ -273,7 +148,7 @@ index 6f5ca3f85ea16..39729e9457e94 100644
  CONFIG_GLOB_SELFTEST=m
  # CONFIG_SECTION_MISMATCH_WARN_ONLY is not set
 diff --git a/arch/m68k/configs/mvme147_defconfig b/arch/m68k/configs/mvme147_defconfig
-index d16b328c71363..0bdb887451ebb 100644
+index d16b328c7136..0bdb887451eb 100644
 --- a/arch/m68k/configs/mvme147_defconfig
 +++ b/arch/m68k/configs/mvme147_defconfig
 @@ -555,7 +555,6 @@ CONFIG_CRYPTO_USER_API_RNG=m
@@ -285,7 +160,7 @@ index d16b328c71363..0bdb887451ebb 100644
  CONFIG_GLOB_SELFTEST=m
  # CONFIG_SECTION_MISMATCH_WARN_ONLY is not set
 diff --git a/arch/m68k/configs/mvme16x_defconfig b/arch/m68k/configs/mvme16x_defconfig
-index 80f6c15a5ed5c..5ae627f6f209a 100644
+index 80f6c15a5ed5..5ae627f6f209 100644
 --- a/arch/m68k/configs/mvme16x_defconfig
 +++ b/arch/m68k/configs/mvme16x_defconfig
 @@ -556,7 +556,6 @@ CONFIG_CRYPTO_USER_API_RNG=m
@@ -297,7 +172,7 @@ index 80f6c15a5ed5c..5ae627f6f209a 100644
  CONFIG_GLOB_SELFTEST=m
  # CONFIG_SECTION_MISMATCH_WARN_ONLY is not set
 diff --git a/arch/m68k/configs/q40_defconfig b/arch/m68k/configs/q40_defconfig
-index 0e81589f0ee26..7a2568eefb7a2 100644
+index 0e81589f0ee2..7a2568eefb7a 100644
 --- a/arch/m68k/configs/q40_defconfig
 +++ b/arch/m68k/configs/q40_defconfig
 @@ -573,7 +573,6 @@ CONFIG_CRYPTO_USER_API_RNG=m
@@ -309,7 +184,7 @@ index 0e81589f0ee26..7a2568eefb7a2 100644
  CONFIG_GLOB_SELFTEST=m
  # CONFIG_SECTION_MISMATCH_WARN_ONLY is not set
 diff --git a/arch/m68k/configs/sun3_defconfig b/arch/m68k/configs/sun3_defconfig
-index 8cd785290339d..1c1c1d729ae81 100644
+index 8cd785290339..1c1c1d729ae8 100644
 --- a/arch/m68k/configs/sun3_defconfig
 +++ b/arch/m68k/configs/sun3_defconfig
 @@ -554,7 +554,6 @@ CONFIG_CRYPTO_USER_API_RNG=m
@@ -321,7 +196,7 @@ index 8cd785290339d..1c1c1d729ae81 100644
  CONFIG_GLOB_SELFTEST=m
  # CONFIG_SECTION_MISMATCH_WARN_ONLY is not set
 diff --git a/arch/m68k/configs/sun3x_defconfig b/arch/m68k/configs/sun3x_defconfig
-index 78035369f60f1..8a665d89b38af 100644
+index 78035369f60f..8a665d89b38a 100644
 --- a/arch/m68k/configs/sun3x_defconfig
 +++ b/arch/m68k/configs/sun3x_defconfig
 @@ -554,7 +554,6 @@ CONFIG_CRYPTO_USER_API_RNG=m
@@ -333,7 +208,7 @@ index 78035369f60f1..8a665d89b38af 100644
  CONFIG_GLOB_SELFTEST=m
  # CONFIG_SECTION_MISMATCH_WARN_ONLY is not set
 diff --git a/arch/riscv/Kconfig b/arch/riscv/Kconfig
-index fa8f2da87a0a8..630edba624d85 100644
+index fa8f2da87a0a..630edba624d8 100644
 --- a/arch/riscv/Kconfig
 +++ b/arch/riscv/Kconfig
 @@ -24,6 +24,7 @@ config RISCV
@@ -345,7 +220,7 @@ index fa8f2da87a0a8..630edba624d85 100644
  	select ARCH_HAS_DEBUG_VIRTUAL if MMU
  	select ARCH_HAS_DEBUG_VM_PGTABLE
 diff --git a/arch/riscv/lib/Makefile b/arch/riscv/lib/Makefile
-index 8eec6b69a875f..79368a895feed 100644
+index 8eec6b69a875..79368a895fee 100644
 --- a/arch/riscv/lib/Makefile
 +++ b/arch/riscv/lib/Makefile
 @@ -15,8 +15,7 @@ endif
@@ -362,7 +237,7 @@ diff --git a/arch/riscv/lib/crc32.c b/arch/riscv/lib/crc32-riscv.c
 similarity index 91%
 rename from arch/riscv/lib/crc32.c
 rename to arch/riscv/lib/crc32-riscv.c
-index d7dc599af3ef6..53d56ab422c72 100644
+index d7dc599af3ef..53d56ab422c7 100644
 --- a/arch/riscv/lib/crc32.c
 +++ b/arch/riscv/lib/crc32-riscv.c
 @@ -14,6 +14,7 @@
@@ -424,7 +299,7 @@ index d7dc599af3ef6..53d56ab422c72 100644
 +MODULE_LICENSE("GPL");
 +MODULE_DESCRIPTION("Accelerated CRC32 implementation with Zbc extension");
 diff --git a/arch/s390/configs/debug_defconfig b/arch/s390/configs/debug_defconfig
-index fb0e9a1d9be25..e4dcdb9a9905e 100644
+index fb0e9a1d9be2..e4dcdb9a9905 100644
 --- a/arch/s390/configs/debug_defconfig
 +++ b/arch/s390/configs/debug_defconfig
 @@ -816,7 +816,6 @@ CONFIG_SYSTEM_BLACKLIST_KEYRING=y
@@ -436,7 +311,7 @@ index fb0e9a1d9be25..e4dcdb9a9905e 100644
  CONFIG_CRC7=m
  CONFIG_CRC8=m
 diff --git a/arch/x86/Kconfig b/arch/x86/Kconfig
-index 7b9a7e8f39acc..ade2062944a61 100644
+index 7b9a7e8f39ac..ade2062944a6 100644
 --- a/arch/x86/Kconfig
 +++ b/arch/x86/Kconfig
 @@ -76,6 +76,8 @@ config X86
@@ -449,7 +324,7 @@ index 7b9a7e8f39acc..ade2062944a61 100644
  	select ARCH_HAS_DEBUG_VIRTUAL
  	select ARCH_HAS_DEBUG_VM_PGTABLE	if !X86_PAE
 diff --git a/arch/x86/crypto/Kconfig b/arch/x86/crypto/Kconfig
-index 7b1bebed879df..4757bf922075b 100644
+index 7b1bebed879d..4757bf922075 100644
 --- a/arch/x86/crypto/Kconfig
 +++ b/arch/x86/crypto/Kconfig
 @@ -363,7 +363,7 @@ config CRYPTO_CHACHA20_X86_64
@@ -508,7 +383,7 @@ index 7b1bebed879df..4757bf922075b 100644
 -
  endmenu
 diff --git a/arch/x86/crypto/Makefile b/arch/x86/crypto/Makefile
-index 53b4a277809e0..07b00bfca64b5 100644
+index 53b4a277809e..07b00bfca64b 100644
 --- a/arch/x86/crypto/Makefile
 +++ b/arch/x86/crypto/Makefile
 @@ -75,16 +75,6 @@ ghash-clmulni-intel-y := ghash-clmulni-intel_asm.o ghash-clmulni-intel_glue.o
@@ -529,7 +404,7 @@ index 53b4a277809e0..07b00bfca64b5 100644
  poly1305-x86_64-y := poly1305-x86_64-cryptogams.o poly1305_glue.o
  targets += poly1305-x86_64-cryptogams.S
 diff --git a/arch/x86/crypto/aegis128-aesni-asm.S b/arch/x86/crypto/aegis128-aesni-asm.S
-index ad7f4c8916256..7294dc0ee7baa 100644
+index 2de859173940..7294dc0ee7ba 100644
 --- a/arch/x86/crypto/aegis128-aesni-asm.S
 +++ b/arch/x86/crypto/aegis128-aesni-asm.S
 @@ -1,14 +1,13 @@
@@ -554,7 +429,7 @@ index ad7f4c8916256..7294dc0ee7baa 100644
  #define T1	%xmm7
  
 -#define STATEP	%rdi
--#define LEN	%rsi
+-#define LEN	%esi
 -#define SRC	%rdx
 -#define DST	%rcx
 -
@@ -599,32 +474,32 @@ index ad7f4c8916256..7294dc0ee7baa 100644
 -	xor %r9d, %r9d
 -	pxor MSG, MSG
 -
--	mov LEN, %r8
+-	mov LEN, %r8d
 -	and $0x1, %r8
 -	jz .Lld_partial_1
 -
--	mov LEN, %r8
+-	mov LEN, %r8d
 -	and $0x1E, %r8
 -	add SRC, %r8
 -	mov (%r8), %r9b
 -
 -.Lld_partial_1:
--	mov LEN, %r8
+-	mov LEN, %r8d
 -	and $0x2, %r8
 -	jz .Lld_partial_2
 -
--	mov LEN, %r8
+-	mov LEN, %r8d
 -	and $0x1C, %r8
 -	add SRC, %r8
 -	shl $0x10, %r9
 -	mov (%r8), %r9w
 -
 -.Lld_partial_2:
--	mov LEN, %r8
+-	mov LEN, %r8d
 -	and $0x4, %r8
 -	jz .Lld_partial_4
 -
--	mov LEN, %r8
+-	mov LEN, %r8d
 -	and $0x18, %r8
 -	add SRC, %r8
 -	shl $32, %r9
@@ -634,11 +509,11 @@ index ad7f4c8916256..7294dc0ee7baa 100644
 -.Lld_partial_4:
 -	movq %r9, MSG
 -
--	mov LEN, %r8
+-	mov LEN, %r8d
 -	and $0x8, %r8
 -	jz .Lld_partial_8
 -
--	mov LEN, %r8
+-	mov LEN, %r8d
 -	and $0x10, %r8
 -	add SRC, %r8
 -	pslldq $8, MSG
@@ -700,7 +575,7 @@ index ad7f4c8916256..7294dc0ee7baa 100644
 + * DST.  Clobbers %rax, %rcx, and %r8.
   */
 -SYM_FUNC_START_LOCAL(__store_partial)
--	mov LEN, %r8
+-	mov LEN, %r8d
 -	mov DST, %r9
 -
 -	movq T0, %r10
@@ -1319,7 +1194,7 @@ index ad7f4c8916256..7294dc0ee7baa 100644
 +	store_partial MSG
  
  	/* mask with byte count: */
--	movq LEN, T0
+-	movd LEN, T0
 -	punpcklbw T0, T0
 -	punpcklbw T0, T0
 -	punpcklbw T0, T0
@@ -1332,7 +1207,7 @@ index ad7f4c8916256..7294dc0ee7baa 100644
  	pand T0, MSG
  
  	aegis128_update
-@@ -695,17 +551,19 @@ SYM_TYPED_FUNC_START(crypto_aegis128_aesni_dec_tail)
+@@ -695,18 +551,19 @@ SYM_TYPED_FUNC_START(crypto_aegis128_aesni_dec_tail)
  	movdqu STATE1, 0x20(STATEP)
  	movdqu STATE2, 0x30(STATEP)
  	movdqu STATE3, 0x40(STATEP)
@@ -1344,7 +1219,8 @@ index ad7f4c8916256..7294dc0ee7baa 100644
  
  /*
 - * void crypto_aegis128_aesni_final(void *state, void *tag_xor,
-- *                                  u64 assoclen, u64 cryptlen);
+- *                                  unsigned int assoclen,
+- *                                  unsigned int cryptlen);
 + * void aegis128_aesni_final(struct aegis_state *state,
 + *			     struct aegis_block *tag_xor,
 + *			     unsigned int assoclen, unsigned int cryptlen);
@@ -1359,12 +1235,12 @@ index ad7f4c8916256..7294dc0ee7baa 100644
  
  	/* load the state: */
  	movdqu 0x00(STATEP), STATE0
-@@ -715,10 +573,8 @@ SYM_FUNC_START(crypto_aegis128_aesni_final)
+@@ -716,10 +573,8 @@ SYM_FUNC_START(crypto_aegis128_aesni_final)
  	movdqu 0x40(STATEP), STATE4
  
  	/* prepare length block: */
--	movq %rdx, MSG
--	movq %rcx, T0
+-	movd %edx, MSG
+-	movd %ecx, T0
 -	pslldq $8, T0
 -	pxor T0, MSG
 +	movd ASSOCLEN, MSG
@@ -1372,7 +1248,7 @@ index ad7f4c8916256..7294dc0ee7baa 100644
  	psllq $3, MSG /* multiply by 8 (to get bit count) */
  
  	pxor STATE3, MSG
-@@ -733,7 +589,7 @@ SYM_FUNC_START(crypto_aegis128_aesni_final)
+@@ -734,7 +589,7 @@ SYM_FUNC_START(crypto_aegis128_aesni_final)
  	aegis128_update; pxor MSG, STATE3
  
  	/* xor tag: */
@@ -1381,7 +1257,7 @@ index ad7f4c8916256..7294dc0ee7baa 100644
  
  	pxor STATE0, MSG
  	pxor STATE1, MSG
-@@ -741,8 +597,6 @@ SYM_FUNC_START(crypto_aegis128_aesni_final)
+@@ -742,8 +597,6 @@ SYM_FUNC_START(crypto_aegis128_aesni_final)
  	pxor STATE3, MSG
  	pxor STATE4, MSG
  
@@ -1393,7 +1269,7 @@ index ad7f4c8916256..7294dc0ee7baa 100644
 -SYM_FUNC_END(crypto_aegis128_aesni_final)
 +SYM_FUNC_END(aegis128_aesni_final)
 diff --git a/arch/x86/crypto/aegis128-aesni-glue.c b/arch/x86/crypto/aegis128-aesni-glue.c
-index 4623189000d89..c19d8e3d96a35 100644
+index 4623189000d8..c19d8e3d96a3 100644
 --- a/arch/x86/crypto/aegis128-aesni-glue.c
 +++ b/arch/x86/crypto/aegis128-aesni-glue.c
 @@ -1,7 +1,7 @@
@@ -1656,7 +1532,7 @@ index 4623189000d89..c19d8e3d96a35 100644
  MODULE_ALIAS_CRYPTO("aegis128");
  MODULE_ALIAS_CRYPTO("aegis128-aesni");
 diff --git a/arch/x86/crypto/aesni-intel_glue.c b/arch/x86/crypto/aesni-intel_glue.c
-index b0dd835554997..dee214f02be2d 100644
+index b0dd83555499..dee214f02be2 100644
 --- a/arch/x86/crypto/aesni-intel_glue.c
 +++ b/arch/x86/crypto/aesni-intel_glue.c
 @@ -1536,26 +1536,6 @@ DEFINE_GCM_ALGS(vaes_avx10_512, FLAG_AVX10_512,
@@ -1697,7 +1573,7 @@ index b0dd835554997..dee214f02be2d 100644
  		aes_xts_alg_vaes_avx10_512.base.cra_priority = 1;
 diff --git a/arch/x86/crypto/crc32-pclmul_asm.S b/arch/x86/crypto/crc32-pclmul_asm.S
 deleted file mode 100644
-index 5d31137e2c7df..0000000000000
+index 5d31137e2c7d..000000000000
 --- a/arch/x86/crypto/crc32-pclmul_asm.S
 +++ /dev/null
 @@ -1,218 +0,0 @@
@@ -1921,7 +1797,7 @@ index 5d31137e2c7df..0000000000000
 -SYM_FUNC_END(crc32_pclmul_le_16)
 diff --git a/arch/x86/crypto/crc32-pclmul_glue.c b/arch/x86/crypto/crc32-pclmul_glue.c
 deleted file mode 100644
-index 9f5e342b9845d..0000000000000
+index 9f5e342b9845..000000000000
 --- a/arch/x86/crypto/crc32-pclmul_glue.c
 +++ /dev/null
 @@ -1,202 +0,0 @@
@@ -2129,7 +2005,7 @@ index 9f5e342b9845d..0000000000000
 -MODULE_ALIAS_CRYPTO("crc32-pclmul");
 diff --git a/arch/x86/crypto/crc32c-intel_glue.c b/arch/x86/crypto/crc32c-intel_glue.c
 deleted file mode 100644
-index feccb5254c7e5..0000000000000
+index feccb5254c7e..000000000000
 --- a/arch/x86/crypto/crc32c-intel_glue.c
 +++ /dev/null
 @@ -1,250 +0,0 @@
@@ -2385,7 +2261,7 @@ index feccb5254c7e5..0000000000000
 -MODULE_ALIAS_CRYPTO("crc32c-intel");
 diff --git a/arch/x86/crypto/crct10dif-pcl-asm_64.S b/arch/x86/crypto/crct10dif-pcl-asm_64.S
 deleted file mode 100644
-index 5286db5b8165e..0000000000000
+index 5286db5b8165..000000000000
 --- a/arch/x86/crypto/crct10dif-pcl-asm_64.S
 +++ /dev/null
 @@ -1,332 +0,0 @@
@@ -2723,7 +2599,7 @@ index 5286db5b8165e..0000000000000
 -	.byte		 0x8,  0x9,  0xa,  0xb,  0xc,  0xd,  0xe , 0x0
 diff --git a/arch/x86/crypto/crct10dif-pclmul_glue.c b/arch/x86/crypto/crct10dif-pclmul_glue.c
 deleted file mode 100644
-index 71291d5af9f45..0000000000000
+index 71291d5af9f4..000000000000
 --- a/arch/x86/crypto/crct10dif-pclmul_glue.c
 +++ /dev/null
 @@ -1,143 +0,0 @@
@@ -2871,7 +2747,7 @@ index 71291d5af9f45..0000000000000
 -MODULE_ALIAS_CRYPTO("crct10dif");
 -MODULE_ALIAS_CRYPTO("crct10dif-pclmul");
 diff --git a/arch/x86/include/asm/cpufeatures.h b/arch/x86/include/asm/cpufeatures.h
-index 51b38bc667960..8f11051cdbb40 100644
+index 51b38bc66796..8f11051cdbb4 100644
 --- a/arch/x86/include/asm/cpufeatures.h
 +++ b/arch/x86/include/asm/cpufeatures.h
 @@ -475,6 +475,7 @@
@@ -2883,7 +2759,7 @@ index 51b38bc667960..8f11051cdbb40 100644
  /*
   * BUG word(s)
 diff --git a/arch/x86/kernel/cpu/intel.c b/arch/x86/kernel/cpu/intel.c
-index e7656cbef68d5..755af4078675d 100644
+index e7656cbef68d..755af4078675 100644
 --- a/arch/x86/kernel/cpu/intel.c
 +++ b/arch/x86/kernel/cpu/intel.c
 @@ -552,6 +552,25 @@ static void init_intel_misc_features(struct cpuinfo_x86 *c)
@@ -2923,7 +2799,7 @@ index e7656cbef68d5..755af4078675d 100644
  	srat_detect_node(c);
  
 diff --git a/arch/x86/lib/Makefile b/arch/x86/lib/Makefile
-index 98583a9dbab33..08496e221a7d1 100644
+index 98583a9dbab3..08496e221a7d 100644
 --- a/arch/x86/lib/Makefile
 +++ b/arch/x86/lib/Makefile
 @@ -38,6 +38,13 @@ lib-$(CONFIG_RANDOMIZE_BASE) += kaslr.o
@@ -2942,7 +2818,7 @@ index 98583a9dbab33..08496e221a7d1 100644
  
 diff --git a/arch/x86/lib/crc-pclmul-consts.h b/arch/x86/lib/crc-pclmul-consts.h
 new file mode 100644
-index 0000000000000..f8af6e9278c83
+index 000000000000..f8af6e9278c8
 --- /dev/null
 +++ b/arch/x86/lib/crc-pclmul-consts.h
 @@ -0,0 +1,148 @@
@@ -3096,7 +2972,7 @@ index 0000000000000..f8af6e9278c83
 +};
 diff --git a/arch/x86/lib/crc-pclmul-template-glue.h b/arch/x86/lib/crc-pclmul-template-glue.h
 new file mode 100644
-index 0000000000000..7a8f9175dcc54
+index 000000000000..7a8f9175dcc5
 --- /dev/null
 +++ b/arch/x86/lib/crc-pclmul-template-glue.h
 @@ -0,0 +1,84 @@
@@ -3186,7 +3062,7 @@ index 0000000000000..7a8f9175dcc54
 +#endif /* _CRC_PCLMUL_TEMPLATE_GLUE_H */
 diff --git a/arch/x86/lib/crc-pclmul-template.S b/arch/x86/lib/crc-pclmul-template.S
 new file mode 100644
-index 0000000000000..54c6b74b7729b
+index 000000000000..54c6b74b7729
 --- /dev/null
 +++ b/arch/x86/lib/crc-pclmul-template.S
 @@ -0,0 +1,588 @@
@@ -3780,7 +3656,7 @@ index 0000000000000..54c6b74b7729b
 +#endif // !CONFIG_AS_VPCLMULQDQ
 diff --git a/arch/x86/lib/crc-t10dif-glue.c b/arch/x86/lib/crc-t10dif-glue.c
 new file mode 100644
-index 0000000000000..f4cfffdb19ceb
+index 000000000000..f4cfffdb19ce
 --- /dev/null
 +++ b/arch/x86/lib/crc-t10dif-glue.c
 @@ -0,0 +1,49 @@
@@ -3835,7 +3711,7 @@ index 0000000000000..f4cfffdb19ceb
 +MODULE_LICENSE("GPL");
 diff --git a/arch/x86/lib/crc16-msb-pclmul.S b/arch/x86/lib/crc16-msb-pclmul.S
 new file mode 100644
-index 0000000000000..14e90ce199314
+index 000000000000..14e90ce19931
 --- /dev/null
 +++ b/arch/x86/lib/crc16-msb-pclmul.S
 @@ -0,0 +1,6 @@
@@ -3847,7 +3723,7 @@ index 0000000000000..14e90ce199314
 +DEFINE_CRC_PCLMUL_FUNCS(crc16_msb, /* bits= */ 16, /* lsb= */ 0)
 diff --git a/arch/x86/lib/crc32-glue.c b/arch/x86/lib/crc32-glue.c
 new file mode 100644
-index 0000000000000..661c09b313303
+index 000000000000..661c09b31330
 --- /dev/null
 +++ b/arch/x86/lib/crc32-glue.c
 @@ -0,0 +1,113 @@
@@ -3966,7 +3842,7 @@ index 0000000000000..661c09b313303
 +MODULE_LICENSE("GPL");
 diff --git a/arch/x86/lib/crc32-pclmul.S b/arch/x86/lib/crc32-pclmul.S
 new file mode 100644
-index 0000000000000..d562944211d4d
+index 000000000000..d562944211d4
 --- /dev/null
 +++ b/arch/x86/lib/crc32-pclmul.S
 @@ -0,0 +1,7 @@
@@ -3981,7 +3857,7 @@ diff --git a/arch/x86/crypto/crc32c-pcl-intel-asm_64.S b/arch/x86/lib/crc32c-3wa
 similarity index 55%
 rename from arch/x86/crypto/crc32c-pcl-intel-asm_64.S
 rename to arch/x86/lib/crc32c-3way.S
-index bbcff1fb78cb2..9b8770503bbcd 100644
+index bbcff1fb78cb..9b8770503bbc 100644
 --- a/arch/x86/crypto/crc32c-pcl-intel-asm_64.S
 +++ b/arch/x86/lib/crc32c-3way.S
 @@ -7,6 +7,7 @@
@@ -4410,7 +4286,7 @@ index bbcff1fb78cb2..9b8770503bbcd 100644
  	## PCLMULQDQ tables
  	## Table is 128 entries x 2 words (8 bytes) each
 diff --git a/crypto/Kconfig b/crypto/Kconfig
-index a779cab668c24..b3bf7800dd94d 100644
+index a779cab668c2..b3bf7800dd94 100644
 --- a/crypto/Kconfig
 +++ b/crypto/Kconfig
 @@ -1101,6 +1101,7 @@ config CRYPTO_CRC32
@@ -4422,7 +4298,7 @@ index a779cab668c24..b3bf7800dd94d 100644
  	  CRC16 CRC algorithm used for the T10 (SCSI) Data Integrity Field (DIF)
  
 diff --git a/crypto/Makefile b/crypto/Makefile
-index 4c99e5d376f68..8361fdb1a27d5 100644
+index 4c99e5d376f6..8361fdb1a27d 100644
 --- a/crypto/Makefile
 +++ b/crypto/Makefile
 @@ -152,7 +152,10 @@ obj-$(CONFIG_CRYPTO_DEFLATE) += deflate.o
@@ -4438,7 +4314,7 @@ index 4c99e5d376f68..8361fdb1a27d5 100644
  obj-$(CONFIG_CRYPTO_AUTHENC) += authenc.o authencesn.o
  obj-$(CONFIG_CRYPTO_LZO) += lzo.o lzo-rle.o
 diff --git a/crypto/algapi.c b/crypto/algapi.c
-index 004d27e41315f..16f7c7a9d8ab6 100644
+index 004d27e41315..16f7c7a9d8ab 100644
 --- a/crypto/algapi.c
 +++ b/crypto/algapi.c
 @@ -6,7 +6,6 @@
@@ -4462,7 +4338,7 @@ index 004d27e41315f..16f7c7a9d8ab6 100644
  {
  	if (fips_enabled && mod && !module_sig_ok(mod))
 diff --git a/crypto/crc32_generic.c b/crypto/crc32_generic.c
-index d1251663ed668..783a30b27398f 100644
+index d1251663ed66..783a30b27398 100644
 --- a/crypto/crc32_generic.c
 +++ b/crypto/crc32_generic.c
 @@ -59,6 +59,15 @@ static int crc32_update(struct shash_desc *desc, const u8 *data,
@@ -4600,7 +4476,7 @@ index d1251663ed668..783a30b27398f 100644
  
  subsys_initcall(crc32_mod_init);
 diff --git a/crypto/crc32c_generic.c b/crypto/crc32c_generic.c
-index a8c90b3f4c6c5..985da981d6e2a 100644
+index a8c90b3f4c6c..985da981d6e2 100644
 --- a/crypto/crc32c_generic.c
 +++ b/crypto/crc32c_generic.c
 @@ -85,6 +85,15 @@ static int chksum_update(struct shash_desc *desc, const u8 *data,
@@ -4745,7 +4621,7 @@ index a8c90b3f4c6c5..985da981d6e2a 100644
  subsys_initcall(crc32c_mod_init);
 diff --git a/crypto/crct10dif_common.c b/crypto/crct10dif_common.c
 deleted file mode 100644
-index b2fab366f518b..0000000000000
+index b2fab366f518..000000000000
 --- a/crypto/crct10dif_common.c
 +++ /dev/null
 @@ -1,82 +0,0 @@
@@ -4832,7 +4708,7 @@ index b2fab366f518b..0000000000000
 -MODULE_DESCRIPTION("T10 DIF CRC calculation common code");
 -MODULE_LICENSE("GPL");
 diff --git a/crypto/crct10dif_generic.c b/crypto/crct10dif_generic.c
-index e843982073bb5..259cb01932cb5 100644
+index e843982073bb..259cb01932cb 100644
 --- a/crypto/crct10dif_generic.c
 +++ b/crypto/crct10dif_generic.c
 @@ -57,6 +57,15 @@ static int chksum_update(struct shash_desc *desc, const u8 *data,
@@ -4952,7 +4828,7 @@ index e843982073bb5..259cb01932cb5 100644
  
  subsys_initcall(crct10dif_mod_init);
 diff --git a/drivers/target/iscsi/Kconfig b/drivers/target/iscsi/Kconfig
-index 922b207bc69dc..70d76f3dd6939 100644
+index 922b207bc69d..70d76f3dd693 100644
 --- a/drivers/target/iscsi/Kconfig
 +++ b/drivers/target/iscsi/Kconfig
 @@ -2,9 +2,9 @@
@@ -4968,7 +4844,7 @@ index 922b207bc69dc..70d76f3dd6939 100644
  	Say M to enable the SCSI target mode stack. A SCSI target mode stack
  	is software that makes local storage available over a storage network
 diff --git a/drivers/target/iscsi/iscsi_target.c b/drivers/target/iscsi/iscsi_target.c
-index 6002283cbebab..091c1efccfb7b 100644
+index 6002283cbeba..091c1efccfb7 100644
 --- a/drivers/target/iscsi/iscsi_target.c
 +++ b/drivers/target/iscsi/iscsi_target.c
 @@ -8,7 +8,7 @@
@@ -5239,7 +5115,7 @@ index 6002283cbebab..091c1efccfb7b 100644
  		sock_release(conn->sock);
  
 diff --git a/drivers/target/iscsi/iscsi_target_login.c b/drivers/target/iscsi/iscsi_target_login.c
-index 90b870f234f03..c2ac9a99ebbb2 100644
+index 90b870f234f0..c2ac9a99ebbb 100644
 --- a/drivers/target/iscsi/iscsi_target_login.c
 +++ b/drivers/target/iscsi/iscsi_target_login.c
 @@ -8,7 +8,6 @@
@@ -5314,7 +5190,7 @@ index 90b870f234f03..c2ac9a99ebbb2 100644
  		iscsi_release_param_list(conn->param_list);
  		conn->param_list = NULL;
 diff --git a/drivers/target/iscsi/iscsi_target_login.h b/drivers/target/iscsi/iscsi_target_login.h
-index e8760735486bc..03c7d695d58f1 100644
+index e8760735486b..03c7d695d58f 100644
 --- a/drivers/target/iscsi/iscsi_target_login.h
 +++ b/drivers/target/iscsi/iscsi_target_login.h
 @@ -9,7 +9,6 @@ struct iscsi_login;
@@ -5326,7 +5202,7 @@ index e8760735486bc..03c7d695d58f1 100644
  extern int iscsi_login_post_auth_non_zero_tsih(struct iscsit_conn *, u16, u32);
  extern int iscsit_setup_np(struct iscsi_np *,
 diff --git a/drivers/target/iscsi/iscsi_target_nego.c b/drivers/target/iscsi/iscsi_target_nego.c
-index fa3fb5f4e6bc4..16e3ded98c32a 100644
+index fa3fb5f4e6bc..16e3ded98c32 100644
 --- a/drivers/target/iscsi/iscsi_target_nego.c
 +++ b/drivers/target/iscsi/iscsi_target_nego.c
 @@ -1194,14 +1194,7 @@ int iscsi_target_locate_portal(
@@ -5365,7 +5241,7 @@ index fa3fb5f4e6bc4..16e3ded98c32a 100644
  	 * Serialize access across the struct iscsi_portal_group to
  	 * process login attempt.
 diff --git a/fs/bcachefs/Kconfig b/fs/bcachefs/Kconfig
-index 5bac803ea367c..a61b22c142a19 100644
+index 5bac803ea367..a61b22c142a1 100644
 --- a/fs/bcachefs/Kconfig
 +++ b/fs/bcachefs/Kconfig
 @@ -15,6 +15,7 @@ config BCACHEFS_FS
@@ -5377,7 +5253,7 @@ index 5bac803ea367c..a61b22c142a19 100644
  	select CRYPTO_CHACHA20
  	select CRYPTO_POLY1305
 diff --git a/fs/ext4/Kconfig b/fs/ext4/Kconfig
-index e20d59221fc05..c9ca41d91a6c1 100644
+index e20d59221fc0..c9ca41d91a6c 100644
 --- a/fs/ext4/Kconfig
 +++ b/fs/ext4/Kconfig
 @@ -31,8 +31,7 @@ config EXT4_FS
@@ -5391,7 +5267,7 @@ index e20d59221fc05..c9ca41d91a6c1 100644
  	select FS_ENCRYPTION_ALGS if FS_ENCRYPTION
  	help
 diff --git a/fs/ext4/ext4.h b/fs/ext4/ext4.h
-index 44b0d418143c2..99aa512a7de12 100644
+index bbffb76d9a90..ab75cd0505f8 100644
 --- a/fs/ext4/ext4.h
 +++ b/fs/ext4/ext4.h
 @@ -33,7 +33,7 @@
@@ -5413,7 +5289,7 @@ index 44b0d418143c2..99aa512a7de12 100644
  	/* Precomputed FS UUID checksum for seeding other checksums */
  	__u32 s_csum_seed;
  
-@@ -2467,19 +2464,7 @@ static inline __le16 ext4_rec_len_to_disk(unsigned len, unsigned blocksize)
+@@ -2459,19 +2456,7 @@ static inline __le16 ext4_rec_len_to_disk(unsigned len, unsigned blocksize)
  static inline u32 ext4_chksum(struct ext4_sb_info *sbi, u32 crc,
  			      const void *address, unsigned int length)
  {
@@ -5434,7 +5310,7 @@ index 44b0d418143c2..99aa512a7de12 100644
  }
  
  #ifdef __KERNEL__
-@@ -3280,11 +3265,7 @@ extern int ext4_register_li_request(struct super_block *sb,
+@@ -3272,11 +3257,7 @@ extern int ext4_register_li_request(struct super_block *sb,
  
  static inline int ext4_has_metadata_csum(struct super_block *sb)
  {
@@ -5448,10 +5324,10 @@ index 44b0d418143c2..99aa512a7de12 100644
  
  static inline int ext4_has_group_desc_csum(struct super_block *sb)
 diff --git a/fs/ext4/super.c b/fs/ext4/super.c
-index 16a4ce704460e..1a821093cc0dd 100644
+index 940ac1a49b72..998155eb2dc6 100644
 --- a/fs/ext4/super.c
 +++ b/fs/ext4/super.c
-@@ -1373,8 +1373,6 @@ static void ext4_put_super(struct super_block *sb)
+@@ -1380,8 +1380,6 @@ static void ext4_put_super(struct super_block *sb)
  	 */
  	kobject_put(&sbi->s_kobj);
  	wait_for_completion(&sbi->s_kobj_unregister);
@@ -5460,7 +5336,7 @@ index 16a4ce704460e..1a821093cc0dd 100644
  	kfree(sbi->s_blockgroup_lock);
  	fs_put_dax(sbi->s_daxdev, NULL);
  	fscrypt_free_dummy_policy(&sbi->s_dummy_enc_policy);
-@@ -4588,15 +4586,6 @@ static int ext4_init_metadata_csum(struct super_block *sb, struct ext4_super_blo
+@@ -4595,15 +4593,6 @@ static int ext4_init_metadata_csum(struct super_block *sb, struct ext4_super_blo
  	ext4_setup_csum_trigger(sb, EXT4_JTR_ORPHAN_FILE,
  				ext4_orphan_file_block_trigger);
  
@@ -5476,7 +5352,7 @@ index 16a4ce704460e..1a821093cc0dd 100644
  	/* Check superblock checksum */
  	if (!ext4_superblock_csum_verify(sb, es)) {
  		ext4_msg(sb, KERN_ERR, "VFS: Found ext4 filesystem with "
-@@ -5640,9 +5629,6 @@ failed_mount8: __maybe_unused
+@@ -5647,9 +5636,6 @@ failed_mount8: __maybe_unused
  	del_timer_sync(&sbi->s_err_report);
  	ext4_group_desc_free(sbi);
  failed_mount:
@@ -5486,7 +5362,7 @@ index 16a4ce704460e..1a821093cc0dd 100644
  #if IS_ENABLED(CONFIG_UNICODE)
  	utf8_unload(sb->s_encoding);
  #endif
-@@ -7435,6 +7421,5 @@ static void __exit ext4_exit_fs(void)
+@@ -7447,6 +7433,5 @@ static void __exit ext4_exit_fs(void)
  MODULE_AUTHOR("Remy Card, Stephen Tweedie, Andrew Morton, Andreas Dilger, Theodore Ts'o and others");
  MODULE_DESCRIPTION("Fourth Extended Filesystem");
  MODULE_LICENSE("GPL");
@@ -5494,7 +5370,7 @@ index 16a4ce704460e..1a821093cc0dd 100644
  module_init(ext4_init_fs)
  module_exit(ext4_exit_fs)
 diff --git a/fs/f2fs/Kconfig b/fs/f2fs/Kconfig
-index 68a1e23e1557c..5916a02fb46dd 100644
+index 68a1e23e1557..5916a02fb46d 100644
 --- a/fs/f2fs/Kconfig
 +++ b/fs/f2fs/Kconfig
 @@ -4,8 +4,7 @@ config F2FS_FS
@@ -5508,7 +5384,7 @@ index 68a1e23e1557c..5916a02fb46dd 100644
  	select FS_ENCRYPTION_ALGS if FS_ENCRYPTION
  	select FS_IOMAP
 diff --git a/fs/f2fs/f2fs.h b/fs/f2fs/f2fs.h
-index 33f5449dc22d5..1fc5c2743c8d4 100644
+index 93a5e1c24e56..f5fc6b1bdccc 100644
 --- a/fs/f2fs/f2fs.h
 +++ b/fs/f2fs/f2fs.h
 @@ -1763,9 +1763,6 @@ struct f2fs_sb_info {
@@ -5545,10 +5421,10 @@ index 33f5449dc22d5..1fc5c2743c8d4 100644
  
  static inline u32 f2fs_crc32(struct f2fs_sb_info *sbi, const void *address,
 diff --git a/fs/f2fs/super.c b/fs/f2fs/super.c
-index 87ab5696bd482..003d3bcb0caa2 100644
+index 983fdd98fc37..9e1505701fc8 100644
 --- a/fs/f2fs/super.c
 +++ b/fs/f2fs/super.c
-@@ -1672,8 +1672,6 @@ static void f2fs_put_super(struct super_block *sb)
+@@ -1682,8 +1682,6 @@ static void f2fs_put_super(struct super_block *sb)
  
  	kvfree(sbi->ckpt);
  
@@ -5557,7 +5433,7 @@ index 87ab5696bd482..003d3bcb0caa2 100644
  	kfree(sbi->raw_super);
  
  	f2fs_destroy_page_array_cache(sbi);
-@@ -4421,15 +4419,6 @@ static int f2fs_fill_super(struct super_block *sb, void *data, int silent)
+@@ -4432,15 +4430,6 @@ static int f2fs_fill_super(struct super_block *sb, void *data, int silent)
  	}
  	mutex_init(&sbi->flush_lock);
  
@@ -5573,7 +5449,7 @@ index 87ab5696bd482..003d3bcb0caa2 100644
  	/* set a block size */
  	if (unlikely(!sb_set_blocksize(sb, F2FS_BLKSIZE))) {
  		f2fs_err(sbi, "unable to set blocksize");
-@@ -4874,8 +4863,6 @@ static int f2fs_fill_super(struct super_block *sb, void *data, int silent)
+@@ -4885,8 +4874,6 @@ static int f2fs_fill_super(struct super_block *sb, void *data, int silent)
  free_sb_buf:
  	kfree(raw_super);
  free_sbi:
@@ -5582,14 +5458,14 @@ index 87ab5696bd482..003d3bcb0caa2 100644
  	kfree(sbi);
  	sb->s_fs_info = NULL;
  
-@@ -5082,5 +5069,3 @@ module_exit(exit_f2fs_fs)
+@@ -5093,5 +5080,3 @@ module_exit(exit_f2fs_fs)
  MODULE_AUTHOR("Samsung Electronics's Praesto Team");
  MODULE_DESCRIPTION("Flash Friendly File System");
  MODULE_LICENSE("GPL");
 -MODULE_SOFTDEP("pre: crc32");
 -
 diff --git a/fs/jbd2/Kconfig b/fs/jbd2/Kconfig
-index 4ad2c67f93f15..9c19e1512101e 100644
+index 4ad2c67f93f1..9c19e1512101 100644
 --- a/fs/jbd2/Kconfig
 +++ b/fs/jbd2/Kconfig
 @@ -2,8 +2,6 @@
@@ -5602,7 +5478,7 @@ index 4ad2c67f93f15..9c19e1512101e 100644
  	  This is a generic journaling layer for block devices that support
  	  both 32-bit and 64-bit block numbers.  It is currently used by
 diff --git a/fs/jbd2/journal.c b/fs/jbd2/journal.c
-index 97f487c3d8fcf..56cea5a738a70 100644
+index 97f487c3d8fc..56cea5a738a7 100644
 --- a/fs/jbd2/journal.c
 +++ b/fs/jbd2/journal.c
 @@ -1375,20 +1375,12 @@ static int journal_check_superblock(journal_t *journal)
@@ -5667,7 +5543,7 @@ index 97f487c3d8fcf..56cea5a738a70 100644
  	lock_buffer(journal->j_sb_buffer);
  
 diff --git a/include/linux/crc-t10dif.h b/include/linux/crc-t10dif.h
-index 6bb0c0bf357b1..16787c1cee21c 100644
+index 6bb0c0bf357b..16787c1cee21 100644
 --- a/include/linux/crc-t10dif.h
 +++ b/include/linux/crc-t10dif.h
 @@ -6,11 +6,29 @@
@@ -5706,7 +5582,7 @@ index 6bb0c0bf357b1..16787c1cee21c 100644
  
  #endif
 diff --git a/include/linux/crc32.h b/include/linux/crc32.h
-index 87f788c0d607b..e9bd40056687a 100644
+index 87f788c0d607..e9bd40056687 100644
 --- a/include/linux/crc32.h
 +++ b/include/linux/crc32.h
 @@ -8,10 +8,49 @@
@@ -5774,7 +5650,7 @@ index 87f788c0d607b..e9bd40056687a 100644
   * __crc32c_le_combine - Combine two crc32c check values into one. For two
   * 			 sequences of bytes, seq1 and seq2 with lengths len1
 diff --git a/include/linux/crc32c.h b/include/linux/crc32c.h
-index 357ae4611a453..47eb78003c265 100644
+index 357ae4611a45..47eb78003c26 100644
 --- a/include/linux/crc32c.h
 +++ b/include/linux/crc32c.h
 @@ -2,9 +2,12 @@
@@ -5793,7 +5669,7 @@ index 357ae4611a453..47eb78003c265 100644
  /* This macro exists for backwards-compatibility. */
  #define crc32c_le crc32c
 diff --git a/include/linux/jbd2.h b/include/linux/jbd2.h
-index 8aef9bb6ad573..33d25a3d15f14 100644
+index 8aef9bb6ad57..33d25a3d15f1 100644
 --- a/include/linux/jbd2.h
 +++ b/include/linux/jbd2.h
 @@ -28,7 +28,7 @@
@@ -5856,7 +5732,7 @@ index 8aef9bb6ad573..33d25a3d15f14 100644
  
  /* Return most recent uncommitted transaction */
 diff --git a/include/target/iscsi/iscsi_target_core.h b/include/target/iscsi/iscsi_target_core.h
-index 60af7c63b34e6..51ca80abacf7b 100644
+index 60af7c63b34e..51ca80abacf7 100644
 --- a/include/target/iscsi/iscsi_target_core.h
 +++ b/include/target/iscsi/iscsi_target_core.h
 @@ -576,9 +576,6 @@ struct iscsit_conn {
@@ -5870,7 +5746,7 @@ index 60af7c63b34e6..51ca80abacf7b 100644
  	cpumask_var_t		conn_cpumask;
  	cpumask_var_t		allowed_cpumask;
 diff --git a/lib/Kconfig b/lib/Kconfig
-index b38849af6f130..342efcd84dbfe 100644
+index b38849af6f13..342efcd84dbf 100644
 --- a/lib/Kconfig
 +++ b/lib/Kconfig
 @@ -144,13 +144,43 @@ config CRC16
@@ -6051,7 +5927,7 @@ index b38849af6f130..342efcd84dbfe 100644
  config CRC8
  	tristate "CRC8 function"
 diff --git a/lib/Kconfig.debug b/lib/Kconfig.debug
-index 7312ae7c3cc57..c5f4b5827665d 100644
+index 7312ae7c3cc5..c5f4b5827665 100644
 --- a/lib/Kconfig.debug
 +++ b/lib/Kconfig.debug
 @@ -2830,6 +2830,26 @@ config HW_BREAKPOINT_KUNIT_TEST
@@ -6082,7 +5958,7 @@ index 7312ae7c3cc57..c5f4b5827665d 100644
  	tristate "Perform selftest on siphash functions" if !KUNIT_ALL_TESTS
  	depends on KUNIT
 diff --git a/lib/Makefile b/lib/Makefile
-index 773adf88af416..19c7edf317590 100644
+index 773adf88af41..19c7edf31759 100644
 --- a/lib/Makefile
 +++ b/lib/Makefile
 @@ -160,10 +160,8 @@ obj-$(CONFIG_CRC_T10DIF)+= crc-t10dif.o
@@ -6105,7 +5981,7 @@ index 773adf88af416..19c7edf317590 100644
  obj-$(CONFIG_USERCOPY_KUNIT_TEST) += usercopy_kunit.o
  
 diff --git a/lib/crc-t10dif.c b/lib/crc-t10dif.c
-index 1ed2ed4870971..311c2ab829f15 100644
+index 1ed2ed487097..311c2ab829f1 100644
 --- a/lib/crc-t10dif.c
 +++ b/lib/crc-t10dif.c
 @@ -9,123 +9,57 @@
@@ -6278,7 +6154,7 @@ index 1ed2ed4870971..311c2ab829f15 100644
  MODULE_LICENSE("GPL");
 -MODULE_SOFTDEP("pre: crct10dif");
 diff --git a/lib/crc32.c b/lib/crc32.c
-index 5649847d0a8d0..47151624332ef 100644
+index 5649847d0a8d..47151624332e 100644
 --- a/lib/crc32.c
 +++ b/lib/crc32.c
 @@ -183,30 +183,26 @@ static inline u32 __pure crc32_le_generic(u32 crc, unsigned char const *p,
@@ -6337,7 +6213,7 @@ index 5649847d0a8d0..47151624332ef 100644
 -EXPORT_SYMBOL(crc32_be);
 +EXPORT_SYMBOL(crc32_be_base);
 diff --git a/lib/crc32test.c b/lib/crc32test.c
-index 9b4af79412c4a..30b8da4d8be46 100644
+index 9b4af79412c4..30b8da4d8be4 100644
 --- a/lib/crc32test.c
 +++ b/lib/crc32test.c
 @@ -551,38 +551,38 @@ static u8 const __aligned(8) test_buf[] __initconst =
@@ -6540,7 +6416,7 @@ index 9b4af79412c4a..30b8da4d8be46 100644
  
 diff --git a/lib/crc_kunit.c b/lib/crc_kunit.c
 new file mode 100644
-index 0000000000000..e0536a3f544d5
+index 000000000000..e0536a3f544d
 --- /dev/null
 +++ b/lib/crc_kunit.c
 @@ -0,0 +1,428 @@
@@ -6973,7 +6849,7 @@ index 0000000000000..e0536a3f544d5
 +MODULE_DESCRIPTION("Unit tests and benchmarks for the CRC library functions");
 +MODULE_LICENSE("GPL");
 diff --git a/lib/crypto/Makefile b/lib/crypto/Makefile
-index 969baab8c805f..01fac1cd05a19 100644
+index 969baab8c805..01fac1cd05a1 100644
 --- a/lib/crypto/Makefile
 +++ b/lib/crypto/Makefile
 @@ -58,3 +58,5 @@ libcurve25519-y					+= curve25519-selftest.o
@@ -6984,7 +6860,7 @@ index 969baab8c805f..01fac1cd05a19 100644
 +obj-$(CONFIG_CRYPTO_MANAGER_EXTRA_TESTS)	+= simd.o
 diff --git a/lib/crypto/simd.c b/lib/crypto/simd.c
 new file mode 100644
-index 0000000000000..9c36cb3bb49c4
+index 000000000000..9c36cb3bb49c
 --- /dev/null
 +++ b/lib/crypto/simd.c
 @@ -0,0 +1,11 @@
@@ -7001,7 +6877,7 @@ index 0000000000000..9c36cb3bb49c4
 +EXPORT_PER_CPU_SYMBOL_GPL(crypto_simd_disabled_for_test);
 diff --git a/lib/libcrc32c.c b/lib/libcrc32c.c
 deleted file mode 100644
-index 649e687413a0c..0000000000000
+index 649e687413a0..000000000000
 --- a/lib/libcrc32c.c
 +++ /dev/null
 @@ -1,74 +0,0 @@
@@ -7081,7 +6957,7 @@ index 649e687413a0c..0000000000000
 -MODULE_SOFTDEP("pre: crc32c");
 diff --git a/scripts/crc/gen-crc-consts.py b/scripts/crc/gen-crc-consts.py
 new file mode 100755
-index 0000000000000..84f0902e1cd7b
+index 000000000000..84f0902e1cd7
 --- /dev/null
 +++ b/scripts/crc/gen-crc-consts.py
 @@ -0,0 +1,207 @@
