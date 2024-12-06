@@ -27,41 +27,8 @@ index 99d345b686fa..6e2458088800 100644
  		return -EFAULT;
  	asm volatile("\n"
  		"1:\t" LOCK_PREFIX "cmpxchgl %3, %2\n"
-diff --git a/arch/x86/kernel/alternative.c b/arch/x86/kernel/alternative.c
-index d17518ca19b8..8b66a555d2f0 100644
---- a/arch/x86/kernel/alternative.c
-+++ b/arch/x86/kernel/alternative.c
-@@ -1825,11 +1825,18 @@ static inline temp_mm_state_t use_temporary_mm(struct mm_struct *mm)
- 	return temp_state;
- }
- 
-+__ro_after_init struct mm_struct *poking_mm;
-+__ro_after_init unsigned long poking_addr;
-+
- static inline void unuse_temporary_mm(temp_mm_state_t prev_state)
- {
- 	lockdep_assert_irqs_disabled();
-+
- 	switch_mm_irqs_off(NULL, prev_state.mm, current);
- 
-+	/* Clear the cpumask, to indicate no TLB flushing is needed anywhere */
-+	cpumask_clear_cpu(raw_smp_processor_id(), mm_cpumask(poking_mm));
-+
- 	/*
- 	 * Restore the breakpoints if they were disabled before the temporary mm
- 	 * was loaded.
-@@ -1838,9 +1845,6 @@ static inline void unuse_temporary_mm(temp_mm_state_t prev_state)
- 		hw_breakpoint_restore();
- }
- 
--__ro_after_init struct mm_struct *poking_mm;
--__ro_after_init unsigned long poking_addr;
--
- static void text_poke_memcpy(void *dst, const void *src, size_t len)
- {
- 	memcpy(dst, src, len);
 diff --git a/arch/x86/mm/tlb.c b/arch/x86/mm/tlb.c
-index b0678d59ebdb..3059b675101c 100644
+index b0678d59ebdb..a2becb85bea7 100644
 --- a/arch/x86/mm/tlb.c
 +++ b/arch/x86/mm/tlb.c
 @@ -569,7 +569,7 @@ void switch_mm_irqs_off(struct mm_struct *unused, struct mm_struct *next,
@@ -73,44 +40,6 @@ index b0678d59ebdb..3059b675101c 100644
  				 !cpumask_test_cpu(cpu, mm_cpumask(next))))
  			cpumask_set_cpu(cpu, mm_cpumask(next));
  
-@@ -607,18 +607,15 @@ void switch_mm_irqs_off(struct mm_struct *unused, struct mm_struct *next,
- 		cond_mitigation(tsk);
- 
- 		/*
--		 * Stop remote flushes for the previous mm.
--		 * Skip kernel threads; we never send init_mm TLB flushing IPIs,
--		 * but the bitmap manipulation can cause cache line contention.
-+		 * Leave this CPU in prev's mm_cpumask. Atomic writes to
-+		 * mm_cpumask can be expensive under contention. The CPU
-+		 * will be removed lazily at TLB flush time.
- 		 */
--		if (prev != &init_mm) {
--			VM_WARN_ON_ONCE(!cpumask_test_cpu(cpu,
--						mm_cpumask(prev)));
--			cpumask_clear_cpu(cpu, mm_cpumask(prev));
--		}
-+		VM_WARN_ON_ONCE(prev != &init_mm && !cpumask_test_cpu(cpu,
-+				mm_cpumask(prev)));
- 
- 		/* Start receiving IPIs and then read tlb_gen (and LAM below) */
--		if (next != &init_mm)
-+		if (next != &init_mm && !cpumask_test_cpu(cpu, mm_cpumask(next)))
- 			cpumask_set_cpu(cpu, mm_cpumask(next));
- 		next_tlb_gen = atomic64_read(&next->context.tlb_gen);
- 
-@@ -762,8 +759,11 @@ static void flush_tlb_func(void *info)
- 		count_vm_tlb_event(NR_TLB_REMOTE_FLUSH_RECEIVED);
- 
- 		/* Can only happen on remote CPUs */
--		if (f->mm && f->mm != loaded_mm)
-+		if (f->mm && f->mm != loaded_mm) {
-+			cpumask_clear_cpu(raw_smp_processor_id(), mm_cpumask(f->mm));
-+			trace_tlb_flush(TLB_REMOTE_WRONG_CPU, 0);
- 			return;
-+		}
- 	}
- 
- 	if (unlikely(loaded_mm == &init_mm))
 diff --git a/drivers/bluetooth/btmtk.c b/drivers/bluetooth/btmtk.c
 index 480e4adba9fa..3626faab9c91 100644
 --- a/drivers/bluetooth/btmtk.c
@@ -2748,18 +2677,6 @@ index 58e988cd8049..6e86d66197ef 100644
  	}
  
  	return ret;
-diff --git a/include/linux/mm_types.h b/include/linux/mm_types.h
-index 6e3bdf8e38bc..6b6f05404304 100644
---- a/include/linux/mm_types.h
-+++ b/include/linux/mm_types.h
-@@ -1335,6 +1335,7 @@ enum tlb_flush_reason {
- 	TLB_LOCAL_SHOOTDOWN,
- 	TLB_LOCAL_MM_SHOOTDOWN,
- 	TLB_REMOTE_SEND_IPI,
-+	TLB_REMOTE_WRONG_CPU,
- 	NR_TLB_FLUSH_REASONS,
- };
- 
 diff --git a/kernel/futex/core.c b/kernel/futex/core.c
 index 136768ae2637..9107704a6574 100644
 --- a/kernel/futex/core.c
