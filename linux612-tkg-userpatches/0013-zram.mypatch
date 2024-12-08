@@ -2,7 +2,7 @@ https://github.com/hellsgod/linux/tree/6.12-zram
 
 
 diff --git a/drivers/block/zram/zram_drv.c b/drivers/block/zram/zram_drv.c
-index e682797cdee7..3dee026988dc 100644
+index d6a1ba969266..3dee026988dc 100644
 --- a/drivers/block/zram/zram_drv.c
 +++ b/drivers/block/zram/zram_drv.c
 @@ -178,11 +178,105 @@ static inline u32 zram_get_priority(struct zram *zram, u32 index)
@@ -435,21 +435,7 @@ index e682797cdee7..3dee026988dc 100644
  			   u64 *num_recomp_pages, u32 threshold, u32 prio,
  			   u32 prio_max)
  {
-@@ -1692,6 +1866,13 @@ static int zram_recompress(struct zram *zram, u32 index, struct page *page,
- 	if (ret)
- 		return ret;
- 
-+	/*
-+	 * We touched this entry so mark it as non-IDLE. This makes sure that
-+	 * we don't preserve IDLE flag and don't incorrectly pick this entry
-+	 * for different post-processing type (e.g. writeback).
-+	 */
-+	zram_clear_flag(zram, index, ZRAM_IDLE);
-+
- 	class_index_old = zs_lookup_class_index(zram->mem_pool, comp_len_old);
- 	/*
- 	 * Iterate the secondary comp algorithms list (in order of priority)
-@@ -1805,20 +1986,17 @@ static int zram_recompress(struct zram *zram, u32 index, struct page *page,
+@@ -1812,20 +1986,17 @@ static int zram_recompress(struct zram *zram, u32 index, struct page *page,
  	return 0;
  }
  
@@ -472,7 +458,7 @@ index e682797cdee7..3dee026988dc 100644
  	struct page *page;
  	ssize_t ret;
  
-@@ -1920,36 +2098,32 @@ static ssize_t recompress_store(struct device *dev,
+@@ -1927,36 +2098,32 @@ static ssize_t recompress_store(struct device *dev,
  		goto release_init_lock;
  	}
  
@@ -499,14 +485,14 @@ index e682797cdee7..3dee026988dc 100644
 -
 -		if (mode & RECOMPRESS_IDLE &&
 -		    !zram_test_flag(zram, index, ZRAM_IDLE))
+-			goto next;
+-
+-		if (mode & RECOMPRESS_HUGE &&
+-		    !zram_test_flag(zram, index, ZRAM_HUGE))
 +		zram_slot_lock(zram, pps->index);
 +		if (!zram_test_flag(zram, pps->index, ZRAM_PP_SLOT))
  			goto next;
  
--		if (mode & RECOMPRESS_HUGE &&
--		    !zram_test_flag(zram, index, ZRAM_HUGE))
--			goto next;
--
 -		if (zram_test_flag(zram, index, ZRAM_WB) ||
 -		    zram_test_flag(zram, index, ZRAM_UNDER_WB) ||
 -		    zram_test_flag(zram, index, ZRAM_SAME) ||
@@ -526,7 +512,7 @@ index e682797cdee7..3dee026988dc 100644
  		if (err) {
  			ret = err;
  			break;
-@@ -1961,6 +2135,7 @@ static ssize_t recompress_store(struct device *dev,
+@@ -1968,6 +2135,7 @@ static ssize_t recompress_store(struct device *dev,
  	__free_page(page);
  
  release_init_lock:
@@ -534,7 +520,7 @@ index e682797cdee7..3dee026988dc 100644
  	atomic_set(&zram->pp_in_progress, 0);
  	up_read(&zram->init_lock);
  	return ret;
-@@ -2119,7 +2294,7 @@ static void zram_destroy_comps(struct zram *zram)
+@@ -2126,7 +2294,7 @@ static void zram_destroy_comps(struct zram *zram)
  {
  	u32 prio;
  
@@ -543,7 +529,7 @@ index e682797cdee7..3dee026988dc 100644
  		struct zcomp *comp = zram->comps[prio];
  
  		zram->comps[prio] = NULL;
-@@ -2191,7 +2366,7 @@ static ssize_t disksize_store(struct device *dev,
+@@ -2198,7 +2366,7 @@ static ssize_t disksize_store(struct device *dev,
  		goto out_unlock;
  	}
  
@@ -565,3 +551,4 @@ index 8acf9d2ee42b..134be414e210 100644
  	ZRAM_HUGE,	/* Incompressible page */
  	ZRAM_IDLE,	/* not accessed page since last idle marking */
  	ZRAM_INCOMPRESSIBLE, /* none of the algorithms could compress it */
+
