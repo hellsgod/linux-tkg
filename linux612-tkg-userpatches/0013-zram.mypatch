@@ -2,7 +2,7 @@ https://github.com/hellsgod/linux/tree/6.12-zram
 
 
 diff --git a/drivers/block/zram/zram_drv.c b/drivers/block/zram/zram_drv.c
-index d6a1ba969266..3dee026988dc 100644
+index d0432b1707ce..3dee026988dc 100644
 --- a/drivers/block/zram/zram_drv.c
 +++ b/drivers/block/zram/zram_drv.c
 @@ -178,11 +178,105 @@ static inline u32 zram_get_priority(struct zram *zram, u32 index)
@@ -111,45 +111,27 @@ index d6a1ba969266..3dee026988dc 100644
  static inline void update_used_max(struct zram *zram,
  					const unsigned long pages)
  {
-@@ -296,19 +390,28 @@ static void mark_idle(struct zram *zram, ktime_t cutoff)
+@@ -296,10 +390,7 @@ static void mark_idle(struct zram *zram, ktime_t cutoff)
  
  	for (index = 0; index < nr_pages; index++) {
  		/*
 -		 * Do not mark ZRAM_UNDER_WB slot as ZRAM_IDLE to close race.
 -		 * See the comment in writeback_store.
+-		 *
+-		 * Also do not mark ZRAM_SAME slots as ZRAM_IDLE, because no
 +		 * Do not mark ZRAM_SAME slots as ZRAM_IDLE, because no
-+		 * post-processing (recompress, writeback) happens to the
-+		 * ZRAM_SAME slot.
-+		 *
-+		 * And ZRAM_WB slots simply cannot be ZRAM_IDLE.
- 		 */
+ 		 * post-processing (recompress, writeback) happens to the
+ 		 * ZRAM_SAME slot.
+ 		 *
+@@ -308,7 +399,6 @@ static void mark_idle(struct zram *zram, ktime_t cutoff)
  		zram_slot_lock(zram, index);
--		if (zram_allocated(zram, index) &&
--				!zram_test_flag(zram, index, ZRAM_UNDER_WB)) {
-+		if (!zram_allocated(zram, index) ||
-+		    zram_test_flag(zram, index, ZRAM_WB) ||
-+		    zram_test_flag(zram, index, ZRAM_SAME)) {
-+			zram_slot_unlock(zram, index);
-+			continue;
-+		}
-+
- #ifdef CONFIG_ZRAM_TRACK_ENTRY_ACTIME
--			is_idle = !cutoff || ktime_after(cutoff,
--							 zram->table[index].ac_time);
-+		is_idle = !cutoff ||
-+			ktime_after(cutoff, zram->table[index].ac_time);
- #endif
--			if (is_idle)
--				zram_set_flag(zram, index, ZRAM_IDLE);
--		}
-+		if (is_idle)
-+			zram_set_flag(zram, index, ZRAM_IDLE);
-+		else
-+			zram_clear_flag(zram, index, ZRAM_IDLE);
- 		zram_slot_unlock(zram, index);
- 	}
- }
-@@ -587,11 +690,57 @@ static void read_from_bdev_async(struct zram *zram, struct page *page,
+ 		if (!zram_allocated(zram, index) ||
+ 		    zram_test_flag(zram, index, ZRAM_WB) ||
+-		    zram_test_flag(zram, index, ZRAM_UNDER_WB) ||
+ 		    zram_test_flag(zram, index, ZRAM_SAME)) {
+ 			zram_slot_unlock(zram, index);
+ 			continue;
+@@ -600,11 +690,57 @@ static void read_from_bdev_async(struct zram *zram, struct page *page,
  #define IDLE_WRITEBACK			(1<<1)
  #define INCOMPRESSIBLE_WRITEBACK	(1<<2)
  
@@ -207,7 +189,7 @@ index d6a1ba969266..3dee026988dc 100644
  	unsigned long index = 0;
  	struct bio bio;
  	struct bio_vec bio_vec;
-@@ -643,7 +792,15 @@ static ssize_t writeback_store(struct device *dev,
+@@ -656,7 +792,15 @@ static ssize_t writeback_store(struct device *dev,
  		goto release_init_lock;
  	}
  
@@ -224,7 +206,7 @@ index d6a1ba969266..3dee026988dc 100644
  		spin_lock(&zram->wb_limit_lock);
  		if (zram->wb_limit_enable && !zram->bd_wb_limit) {
  			spin_unlock(&zram->wb_limit_lock);
-@@ -660,38 +817,20 @@ static ssize_t writeback_store(struct device *dev,
+@@ -673,38 +817,20 @@ static ssize_t writeback_store(struct device *dev,
  			}
  		}
  
@@ -272,7 +254,7 @@ index d6a1ba969266..3dee026988dc 100644
  			continue;
  		}
  
-@@ -706,10 +845,7 @@ static ssize_t writeback_store(struct device *dev,
+@@ -719,10 +845,7 @@ static ssize_t writeback_store(struct device *dev,
  		 */
  		err = submit_bio_wait(&bio);
  		if (err) {
@@ -284,7 +266,7 @@ index d6a1ba969266..3dee026988dc 100644
  			/*
  			 * BIO errors are not fatal, we continue and simply
  			 * attempt to writeback the remaining objects (pages).
-@@ -723,25 +859,19 @@ static ssize_t writeback_store(struct device *dev,
+@@ -736,25 +859,19 @@ static ssize_t writeback_store(struct device *dev,
  		}
  
  		atomic64_inc(&zram->stats.bd_writes);
@@ -318,7 +300,7 @@ index d6a1ba969266..3dee026988dc 100644
  		zram_set_flag(zram, index, ZRAM_WB);
  		zram_set_element(zram, index, blk_idx);
  		blk_idx = 0;
-@@ -752,12 +882,14 @@ static ssize_t writeback_store(struct device *dev,
+@@ -765,12 +882,14 @@ static ssize_t writeback_store(struct device *dev,
  		spin_unlock(&zram->wb_limit_lock);
  next:
  		zram_slot_unlock(zram, index);
@@ -333,7 +315,7 @@ index d6a1ba969266..3dee026988dc 100644
  	atomic_set(&zram->pp_in_progress, 0);
  	up_read(&zram->init_lock);
  
-@@ -1349,19 +1481,17 @@ static void zram_free_page(struct zram *zram, size_t index)
+@@ -1362,19 +1481,17 @@ static void zram_free_page(struct zram *zram, size_t index)
  #ifdef CONFIG_ZRAM_TRACK_ENTRY_ACTIME
  	zram->table[index].ac_time = 0;
  #endif
@@ -358,7 +340,7 @@ index d6a1ba969266..3dee026988dc 100644
  	if (zram_test_flag(zram, index, ZRAM_WB)) {
  		zram_clear_flag(zram, index, ZRAM_WB);
  		free_block_bdev(zram, zram_get_element(zram, index));
-@@ -1385,13 +1515,11 @@ static void zram_free_page(struct zram *zram, size_t index)
+@@ -1398,13 +1515,11 @@ static void zram_free_page(struct zram *zram, size_t index)
  	zs_free(zram->mem_pool, handle);
  
  	atomic64_sub(zram_get_obj_size(zram, index),
@@ -373,7 +355,7 @@ index d6a1ba969266..3dee026988dc 100644
  }
  
  /*
-@@ -1655,6 +1783,52 @@ static int zram_bvec_write(struct zram *zram, struct bio_vec *bvec,
+@@ -1668,6 +1783,52 @@ static int zram_bvec_write(struct zram *zram, struct bio_vec *bvec,
  }
  
  #ifdef CONFIG_ZRAM_MULTI_COMP
@@ -426,7 +408,7 @@ index d6a1ba969266..3dee026988dc 100644
  /*
   * This function will decompress (unless it's ZRAM_HUGE) the page and then
   * attempt to compress it using provided compression algorithm priority
-@@ -1662,7 +1836,7 @@ static int zram_bvec_write(struct zram *zram, struct bio_vec *bvec,
+@@ -1675,7 +1836,7 @@ static int zram_bvec_write(struct zram *zram, struct bio_vec *bvec,
   *
   * Corresponding ZRAM slot should be locked.
   */
@@ -435,7 +417,7 @@ index d6a1ba969266..3dee026988dc 100644
  			   u64 *num_recomp_pages, u32 threshold, u32 prio,
  			   u32 prio_max)
  {
-@@ -1812,20 +1986,17 @@ static int zram_recompress(struct zram *zram, u32 index, struct page *page,
+@@ -1825,20 +1986,17 @@ static int zram_recompress(struct zram *zram, u32 index, struct page *page,
  	return 0;
  }
  
@@ -458,7 +440,7 @@ index d6a1ba969266..3dee026988dc 100644
  	struct page *page;
  	ssize_t ret;
  
-@@ -1927,36 +2098,32 @@ static ssize_t recompress_store(struct device *dev,
+@@ -1940,36 +2098,32 @@ static ssize_t recompress_store(struct device *dev,
  		goto release_init_lock;
  	}
  
@@ -481,18 +463,18 @@ index d6a1ba969266..3dee026988dc 100644
 -		zram_slot_lock(zram, index);
 -
 -		if (!zram_allocated(zram, index))
--			goto next;
--
++		zram_slot_lock(zram, pps->index);
++		if (!zram_test_flag(zram, pps->index, ZRAM_PP_SLOT))
+ 			goto next;
+ 
 -		if (mode & RECOMPRESS_IDLE &&
 -		    !zram_test_flag(zram, index, ZRAM_IDLE))
 -			goto next;
 -
 -		if (mode & RECOMPRESS_HUGE &&
 -		    !zram_test_flag(zram, index, ZRAM_HUGE))
-+		zram_slot_lock(zram, pps->index);
-+		if (!zram_test_flag(zram, pps->index, ZRAM_PP_SLOT))
- 			goto next;
- 
+-			goto next;
+-
 -		if (zram_test_flag(zram, index, ZRAM_WB) ||
 -		    zram_test_flag(zram, index, ZRAM_UNDER_WB) ||
 -		    zram_test_flag(zram, index, ZRAM_SAME) ||
@@ -512,7 +494,7 @@ index d6a1ba969266..3dee026988dc 100644
  		if (err) {
  			ret = err;
  			break;
-@@ -1968,6 +2135,7 @@ static ssize_t recompress_store(struct device *dev,
+@@ -1981,6 +2135,7 @@ static ssize_t recompress_store(struct device *dev,
  	__free_page(page);
  
  release_init_lock:
@@ -520,7 +502,7 @@ index d6a1ba969266..3dee026988dc 100644
  	atomic_set(&zram->pp_in_progress, 0);
  	up_read(&zram->init_lock);
  	return ret;
-@@ -2126,7 +2294,7 @@ static void zram_destroy_comps(struct zram *zram)
+@@ -2139,7 +2294,7 @@ static void zram_destroy_comps(struct zram *zram)
  {
  	u32 prio;
  
@@ -529,7 +511,7 @@ index d6a1ba969266..3dee026988dc 100644
  		struct zcomp *comp = zram->comps[prio];
  
  		zram->comps[prio] = NULL;
-@@ -2198,7 +2366,7 @@ static ssize_t disksize_store(struct device *dev,
+@@ -2211,7 +2366,7 @@ static ssize_t disksize_store(struct device *dev,
  		goto out_unlock;
  	}
  
