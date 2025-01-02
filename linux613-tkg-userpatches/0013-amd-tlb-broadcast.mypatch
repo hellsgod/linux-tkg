@@ -11,6 +11,16 @@ index 9d7bd0ae48c4..e8743f8c9fd0 100644
  	select MMU_GATHER_MERGE_VMAS
  	select HAVE_POSIX_CPU_TIMERS_TASK_WORK
  	select HAVE_REGS_AND_STACK_ACCESS_API
+diff --git a/arch/x86/hyperv/mmu.c b/arch/x86/hyperv/mmu.c
+index 1cc113200ff5..cbe6c71e17c1 100644
+--- a/arch/x86/hyperv/mmu.c
++++ b/arch/x86/hyperv/mmu.c
+@@ -240,5 +240,4 @@ void hyperv_setup_mmu_ops(void)
+ 
+ 	pr_info("Using hypercall for remote TLB flush\n");
+ 	pv_ops.mmu.flush_tlb_multi = hyperv_flush_tlb_multi;
+-	pv_ops.mmu.tlb_remove_table = tlb_remove_table;
+ }
 diff --git a/arch/x86/include/asm/cpufeatures.h b/arch/x86/include/asm/cpufeatures.h
 index 645aa360628d..742c138d011a 100644
 --- a/arch/x86/include/asm/cpufeatures.h
@@ -176,6 +186,35 @@ index 2886cb668d7f..2c347b51d9b9 100644
  }
  
  extern void switch_mm(struct mm_struct *prev, struct mm_struct *next,
+diff --git a/arch/x86/include/asm/paravirt.h b/arch/x86/include/asm/paravirt.h
+index d4eb9e1d61b8..794ba3647c6c 100644
+--- a/arch/x86/include/asm/paravirt.h
++++ b/arch/x86/include/asm/paravirt.h
+@@ -91,11 +91,6 @@ static inline void __flush_tlb_multi(const struct cpumask *cpumask,
+ 	PVOP_VCALL2(mmu.flush_tlb_multi, cpumask, info);
+ }
+ 
+-static inline void paravirt_tlb_remove_table(struct mmu_gather *tlb, void *table)
+-{
+-	PVOP_VCALL2(mmu.tlb_remove_table, tlb, table);
+-}
+-
+ static inline void paravirt_arch_exit_mmap(struct mm_struct *mm)
+ {
+ 	PVOP_VCALL1(mmu.exit_mmap, mm);
+diff --git a/arch/x86/include/asm/paravirt_types.h b/arch/x86/include/asm/paravirt_types.h
+index 8d4fbe1be489..13405959e4db 100644
+--- a/arch/x86/include/asm/paravirt_types.h
++++ b/arch/x86/include/asm/paravirt_types.h
+@@ -136,8 +136,6 @@ struct pv_mmu_ops {
+ 	void (*flush_tlb_multi)(const struct cpumask *cpus,
+ 				const struct flush_tlb_info *info);
+ 
+-	void (*tlb_remove_table)(struct mmu_gather *tlb, void *table);
+-
+ 	/* Hook for intercepting the destruction of an mm_struct. */
+ 	void (*exit_mmap)(struct mm_struct *mm);
+ 	void (*notify_page_enc_status_changed)(unsigned long pfn, int npages, bool enc);
 diff --git a/arch/x86/include/asm/tlbbatch.h b/arch/x86/include/asm/tlbbatch.h
 index 1ad56eb3e8a8..f9a17edf63ad 100644
 --- a/arch/x86/include/asm/tlbbatch.h
@@ -189,7 +228,7 @@ index 1ad56eb3e8a8..f9a17edf63ad 100644
  
  #endif /* _ARCH_X86_TLBBATCH_H */
 diff --git a/arch/x86/include/asm/tlbflush.h b/arch/x86/include/asm/tlbflush.h
-index 69e79fff41b8..be26ded17db7 100644
+index 69e79fff41b8..a2f9b7370717 100644
 --- a/arch/x86/include/asm/tlbflush.h
 +++ b/arch/x86/include/asm/tlbflush.h
 @@ -10,6 +10,7 @@
@@ -200,7 +239,7 @@ index 69e79fff41b8..be26ded17db7 100644
  #include <asm/invpcid.h>
  #include <asm/pti.h>
  #include <asm/processor-flags.h>
-@@ -64,6 +65,21 @@ static inline void cr4_clear_bits(unsigned long mask)
+@@ -64,6 +65,23 @@ static inline void cr4_clear_bits(unsigned long mask)
   */
  #define TLB_NR_DYN_ASIDS	6
  
@@ -208,10 +247,12 @@ index 69e79fff41b8..be26ded17db7 100644
 +#define is_dyn_asid(asid) (asid) < TLB_NR_DYN_ASIDS
 +#define is_broadcast_asid(asid) (asid) >= TLB_NR_DYN_ASIDS
 +#define in_asid_transition(info) (info->mm && info->mm->context.asid_transition)
++#define mm_broadcast_asid(mm) (mm->context.broadcast_asid)
 +#else
 +#define is_dyn_asid(asid) true
 +#define is_broadcast_asid(asid) false
 +#define in_asid_transition(info) false
++#define mm_broadcast_asid(mm) 0
 +
 +inline bool needs_broadcast_asid_reload(struct mm_struct *next, u16 prev_asid)
 +{
@@ -222,7 +263,7 @@ index 69e79fff41b8..be26ded17db7 100644
  struct tlb_context {
  	u64 ctx_id;
  	u64 tlb_gen;
-@@ -182,6 +198,7 @@ static inline void cr4_init_shadow(void)
+@@ -182,6 +200,7 @@ static inline void cr4_init_shadow(void)
  
  extern unsigned long mmu_cr4_features;
  extern u32 *trampoline_cr4_features;
@@ -230,7 +271,7 @@ index 69e79fff41b8..be26ded17db7 100644
  
  extern void initialize_tlbstate_and_flush(void);
  
-@@ -277,21 +294,15 @@ static inline u64 inc_mm_tlb_gen(struct mm_struct *mm)
+@@ -277,21 +296,15 @@ static inline u64 inc_mm_tlb_gen(struct mm_struct *mm)
  	return atomic64_inc_return(&mm->context.tlb_gen);
  }
  
@@ -282,8 +323,20 @@ index 79d2e17f6582..4dc42705aaca 100644
  }
  
  static const struct cpu_dev amd_cpu_dev = {
+diff --git a/arch/x86/kernel/kvm.c b/arch/x86/kernel/kvm.c
+index 21e9e4845354..83b7679658b1 100644
+--- a/arch/x86/kernel/kvm.c
++++ b/arch/x86/kernel/kvm.c
+@@ -838,7 +838,6 @@ static void __init kvm_guest_init(void)
+ #ifdef CONFIG_SMP
+ 	if (pv_tlb_flush_supported()) {
+ 		pv_ops.mmu.flush_tlb_multi = kvm_flush_tlb_multi;
+-		pv_ops.mmu.tlb_remove_table = tlb_remove_table;
+ 		pr_info("KVM setup pv remote TLB flush\n");
+ 	}
+ 
 diff --git a/arch/x86/kernel/paravirt.c b/arch/x86/kernel/paravirt.c
-index fec381533555..2b78a6b466ed 100644
+index fec381533555..c019771e0123 100644
 --- a/arch/x86/kernel/paravirt.c
 +++ b/arch/x86/kernel/paravirt.c
 @@ -59,11 +59,6 @@ void __init native_pv_lock_init(void)
@@ -298,17 +351,16 @@ index fec381533555..2b78a6b466ed 100644
  struct static_key paravirt_steal_enabled;
  struct static_key paravirt_steal_rq_enabled;
  
-@@ -191,7 +186,7 @@ struct paravirt_patch_template pv_ops = {
+@@ -191,7 +186,6 @@ struct paravirt_patch_template pv_ops = {
  	.mmu.flush_tlb_kernel	= native_flush_tlb_global,
  	.mmu.flush_tlb_one_user	= native_flush_tlb_one_user,
  	.mmu.flush_tlb_multi	= native_flush_tlb_multi,
 -	.mmu.tlb_remove_table	= native_tlb_remove_table,
-+	.mmu.tlb_remove_table	= tlb_remove_table,
  
  	.mmu.exit_mmap		= paravirt_nop,
  	.mmu.notify_page_enc_status_changed	= paravirt_nop,
 diff --git a/arch/x86/kernel/setup.c b/arch/x86/kernel/setup.c
-index f1fea506e20f..ef2b49edca25 100644
+index f1fea506e20f..6c4d08f8f7b1 100644
 --- a/arch/x86/kernel/setup.c
 +++ b/arch/x86/kernel/setup.c
 @@ -138,6 +138,10 @@ __visible unsigned long mmu_cr4_features __ro_after_init;
@@ -316,14 +368,68 @@ index f1fea506e20f..ef2b49edca25 100644
  #endif
  
 +#ifdef CONFIG_CPU_SUP_AMD
-+u16 invlpgb_count_max;
++u16 invlpgb_count_max __ro_after_init;
 +#endif
 +
  #ifdef CONFIG_IMA
  static phys_addr_t ima_kexec_buffer_phys;
  static size_t ima_kexec_buffer_size;
+diff --git a/arch/x86/mm/pgtable.c b/arch/x86/mm/pgtable.c
+index 5745a354a241..3dc4af1f7868 100644
+--- a/arch/x86/mm/pgtable.c
++++ b/arch/x86/mm/pgtable.c
+@@ -18,14 +18,6 @@ EXPORT_SYMBOL(physical_mask);
+ #define PGTABLE_HIGHMEM 0
+ #endif
+ 
+-#ifndef CONFIG_PARAVIRT
+-static inline
+-void paravirt_tlb_remove_table(struct mmu_gather *tlb, void *table)
+-{
+-	tlb_remove_page(tlb, table);
+-}
+-#endif
+-
+ gfp_t __userpte_alloc_gfp = GFP_PGTABLE_USER | PGTABLE_HIGHMEM;
+ 
+ pgtable_t pte_alloc_one(struct mm_struct *mm)
+@@ -54,7 +46,7 @@ void ___pte_free_tlb(struct mmu_gather *tlb, struct page *pte)
+ {
+ 	pagetable_pte_dtor(page_ptdesc(pte));
+ 	paravirt_release_pte(page_to_pfn(pte));
+-	paravirt_tlb_remove_table(tlb, pte);
++	tlb_remove_table(tlb, pte);
+ }
+ 
+ #if CONFIG_PGTABLE_LEVELS > 2
+@@ -70,7 +62,7 @@ void ___pmd_free_tlb(struct mmu_gather *tlb, pmd_t *pmd)
+ 	tlb->need_flush_all = 1;
+ #endif
+ 	pagetable_pmd_dtor(ptdesc);
+-	paravirt_tlb_remove_table(tlb, ptdesc_page(ptdesc));
++	tlb_remove_table(tlb, ptdesc_page(ptdesc));
+ }
+ 
+ #if CONFIG_PGTABLE_LEVELS > 3
+@@ -80,14 +72,14 @@ void ___pud_free_tlb(struct mmu_gather *tlb, pud_t *pud)
+ 
+ 	pagetable_pud_dtor(ptdesc);
+ 	paravirt_release_pud(__pa(pud) >> PAGE_SHIFT);
+-	paravirt_tlb_remove_table(tlb, virt_to_page(pud));
++	tlb_remove_table(tlb, virt_to_page(pud));
+ }
+ 
+ #if CONFIG_PGTABLE_LEVELS > 4
+ void ___p4d_free_tlb(struct mmu_gather *tlb, p4d_t *p4d)
+ {
+ 	paravirt_release_p4d(__pa(p4d) >> PAGE_SHIFT);
+-	paravirt_tlb_remove_table(tlb, virt_to_page(p4d));
++	tlb_remove_table(tlb, virt_to_page(p4d));
+ }
+ #endif	/* CONFIG_PGTABLE_LEVELS > 4 */
+ #endif	/* CONFIG_PGTABLE_LEVELS > 3 */
 diff --git a/arch/x86/mm/tlb.c b/arch/x86/mm/tlb.c
-index a2becb85bea7..d81f0692aaee 100644
+index a2becb85bea7..0080175153ef 100644
 --- a/arch/x86/mm/tlb.c
 +++ b/arch/x86/mm/tlb.c
 @@ -74,13 +74,15 @@
@@ -354,8 +460,8 @@ index a2becb85bea7..d81f0692aaee 100644
 +	 * TLB flushes happen even while the process isn't running.
 +	 */
 +#ifdef CONFIG_CPU_SUP_AMD
-+	if (static_cpu_has(X86_FEATURE_INVLPGB) && next->context.broadcast_asid) {
-+		*new_asid = next->context.broadcast_asid;
++	if (static_cpu_has(X86_FEATURE_INVLPGB) && mm_broadcast_asid(next)) {
++		*new_asid = mm_broadcast_asid(next);
 +		*need_flush = false;
 +		return;
 +	}
@@ -364,7 +470,7 @@ index a2becb85bea7..d81f0692aaee 100644
  	if (this_cpu_read(cpu_tlbstate.invalidate_other))
  		clear_asid_other();
  
-@@ -251,6 +265,248 @@ static void choose_new_asid(struct mm_struct *next, u64 next_tlb_gen,
+@@ -251,6 +265,245 @@ static void choose_new_asid(struct mm_struct *next, u64 next_tlb_gen,
  	*need_flush = true;
  }
  
@@ -429,7 +535,7 @@ index a2becb85bea7..d81f0692aaee 100644
 + */
 +static bool needs_broadcast_asid_reload(struct mm_struct *next, u16 prev_asid)
 +{
-+	u16 broadcast_asid = next->context.broadcast_asid;
++	u16 broadcast_asid = mm_broadcast_asid(next);
 +
 +	if (broadcast_asid && prev_asid != broadcast_asid)
 +		return true;
@@ -451,10 +557,13 @@ index a2becb85bea7..d81f0692aaee 100644
 +	broadcast_asid_available++;
 +}
 +
-+static int mm_active_cpus(struct mm_struct *mm)
++static bool mm_active_cpus_exceeds(struct mm_struct *mm, int threshold)
 +{
 +	int count = 0;
 +	int cpu;
++
++	if (cpumask_weight(mm_cpumask(mm)) <= threshold)
++		return false;
 +
 +	for_each_cpu(cpu, mm_cpumask(mm)) {
 +		/* Skip the CPUs that aren't really running this process. */
@@ -464,9 +573,10 @@ index a2becb85bea7..d81f0692aaee 100644
 +		if (per_cpu(cpu_tlbstate_shared.is_lazy, cpu))
 +			continue;
 +
-+		count++;
++		if (++count > threshold)
++			return true;
 +	}
-+	return count;
++	return false;
 +}
 +
 +/*
@@ -505,15 +615,8 @@ index a2becb85bea7..d81f0692aaee 100644
 +{
 +	int avail = broadcast_asid_available;
 +	int threshold = HALFFULL_THRESHOLD;
-+	int mm_active_threads;
 +
 +	if (!avail)
-+		return false;
-+
-+	mm_active_threads = mm_active_cpus(mm);
-+
-+	/* Small processes can just use IPI TLB flushing. */
-+	if (mm_active_threads < 3)
 +		return false;
 +
 +	if (avail > MAX_ASID_AVAILABLE * 3 / 4) {
@@ -524,10 +627,10 @@ index a2becb85bea7..d81f0692aaee 100644
 +		do {
 +			avail *= 2;
 +			threshold *= 2;
-+		} while ((avail + threshold ) < MAX_ASID_AVAILABLE / 2);
++		} while ((avail + threshold) < MAX_ASID_AVAILABLE / 2);
 +	}
 +
-+	return mm_active_threads > threshold;
++	return mm_active_cpus_exceeds(mm, threshold);
 +}
 +
 +static void count_tlb_flush(struct mm_struct *mm)
@@ -546,7 +649,7 @@ index a2becb85bea7..d81f0692aaee 100644
 +static void finish_asid_transition(struct flush_tlb_info *info)
 +{
 +	struct mm_struct *mm = info->mm;
-+	int bc_asid = mm->context.broadcast_asid;
++	int bc_asid = mm_broadcast_asid(mm);
 +	int cpu;
 +
 +	if (!mm->context.asid_transition)
@@ -613,7 +716,7 @@ index a2becb85bea7..d81f0692aaee 100644
  /*
   * Given an ASID, flush the corresponding user ASID.  We can delay this
   * until the next time we switch to it.
-@@ -556,8 +812,9 @@ void switch_mm_irqs_off(struct mm_struct *unused, struct mm_struct *next,
+@@ -556,8 +809,9 @@ void switch_mm_irqs_off(struct mm_struct *unused, struct mm_struct *next,
  	 */
  	if (prev == next) {
  		/* Not actually switching mm's */
@@ -625,7 +728,7 @@ index a2becb85bea7..d81f0692aaee 100644
  
  		/*
  		 * If this races with another thread that enables lam, 'new_lam'
-@@ -573,6 +830,23 @@ void switch_mm_irqs_off(struct mm_struct *unused, struct mm_struct *next,
+@@ -573,6 +827,23 @@ void switch_mm_irqs_off(struct mm_struct *unused, struct mm_struct *next,
  				 !cpumask_test_cpu(cpu, mm_cpumask(next))))
  			cpumask_set_cpu(cpu, mm_cpumask(next));
  
@@ -649,7 +752,7 @@ index a2becb85bea7..d81f0692aaee 100644
  		/*
  		 * If the CPU is not in lazy TLB mode, we are just switching
  		 * from one thread in a process to another thread in the same
-@@ -629,8 +903,10 @@ void switch_mm_irqs_off(struct mm_struct *unused, struct mm_struct *next,
+@@ -629,8 +900,10 @@ void switch_mm_irqs_off(struct mm_struct *unused, struct mm_struct *next,
  		barrier();
  	}
  
@@ -660,7 +763,7 @@ index a2becb85bea7..d81f0692aaee 100644
  		this_cpu_write(cpu_tlbstate.ctxs[new_asid].ctx_id, next->context.ctx_id);
  		this_cpu_write(cpu_tlbstate.ctxs[new_asid].tlb_gen, next_tlb_gen);
  		load_new_mm_cr3(next->pgd, new_asid, new_lam, true);
-@@ -749,7 +1025,7 @@ static void flush_tlb_func(void *info)
+@@ -749,7 +1022,7 @@ static void flush_tlb_func(void *info)
  	const struct flush_tlb_info *f = info;
  	struct mm_struct *loaded_mm = this_cpu_read(cpu_tlbstate.loaded_mm);
  	u32 loaded_mm_asid = this_cpu_read(cpu_tlbstate.loaded_mm_asid);
@@ -669,7 +772,7 @@ index a2becb85bea7..d81f0692aaee 100644
  	bool local = smp_processor_id() == f->initiating_cpu;
  	unsigned long nr_invalidate = 0;
  	u64 mm_tlb_gen;
-@@ -769,6 +1045,16 @@ static void flush_tlb_func(void *info)
+@@ -769,6 +1042,16 @@ static void flush_tlb_func(void *info)
  	if (unlikely(loaded_mm == &init_mm))
  		return;
  
@@ -686,7 +789,7 @@ index a2becb85bea7..d81f0692aaee 100644
  	VM_WARN_ON(this_cpu_read(cpu_tlbstate.ctxs[loaded_mm_asid].ctx_id) !=
  		   loaded_mm->context.ctx_id);
  
-@@ -786,6 +1072,8 @@ static void flush_tlb_func(void *info)
+@@ -786,6 +1069,8 @@ static void flush_tlb_func(void *info)
  		return;
  	}
  
@@ -695,7 +798,7 @@ index a2becb85bea7..d81f0692aaee 100644
  	if (unlikely(f->new_tlb_gen != TLB_GENERATION_INVALID &&
  		     f->new_tlb_gen <= local_tlb_gen)) {
  		/*
-@@ -825,7 +1113,7 @@ static void flush_tlb_func(void *info)
+@@ -825,7 +1110,7 @@ static void flush_tlb_func(void *info)
  	 *
  	 * The only question is whether to do a full or partial flush.
  	 *
@@ -704,7 +807,7 @@ index a2becb85bea7..d81f0692aaee 100644
  	 * are met:
  	 *
  	 * 1. f->new_tlb_gen == local_tlb_gen + 1.  We have an invariant that
-@@ -852,10 +1140,14 @@ static void flush_tlb_func(void *info)
+@@ -852,10 +1137,14 @@ static void flush_tlb_func(void *info)
  	 *    date.  By doing a full flush instead, we can increase
  	 *    local_tlb_gen all the way to mm_tlb_gen and we can probably
  	 *    avoid another flush in the very near future.
@@ -720,7 +823,7 @@ index a2becb85bea7..d81f0692aaee 100644
  		/* Partial flush */
  		unsigned long addr = f->start;
  
-@@ -926,7 +1218,7 @@ STATIC_NOPV void native_flush_tlb_multi(const struct cpumask *cpumask,
+@@ -926,7 +1215,7 @@ STATIC_NOPV void native_flush_tlb_multi(const struct cpumask *cpumask,
  	 * up on the new contents of what used to be page tables, while
  	 * doing a speculative memory access.
  	 */
@@ -729,7 +832,7 @@ index a2becb85bea7..d81f0692aaee 100644
  		on_each_cpu_mask(cpumask, flush_tlb_func, (void *)info, true);
  	else
  		on_each_cpu_cond_mask(tlb_is_not_lazy, flush_tlb_func,
-@@ -998,14 +1290,18 @@ void flush_tlb_mm_range(struct mm_struct *mm, unsigned long start,
+@@ -998,14 +1287,18 @@ void flush_tlb_mm_range(struct mm_struct *mm, unsigned long start,
  				bool freed_tables)
  {
  	struct flush_tlb_info *info;
@@ -749,12 +852,12 @@ index a2becb85bea7..d81f0692aaee 100644
  		start = 0;
  		end = TLB_FLUSH_ALL;
  	}
-@@ -1021,8 +1317,11 @@ void flush_tlb_mm_range(struct mm_struct *mm, unsigned long start,
+@@ -1021,8 +1314,11 @@ void flush_tlb_mm_range(struct mm_struct *mm, unsigned long start,
  	 * a local TLB flush is needed. Optimize this use-case by calling
  	 * flush_tlb_func_local() directly in this case.
  	 */
 -	if (cpumask_any_but(mm_cpumask(mm), cpu) < nr_cpu_ids) {
-+	if (IS_ENABLED(CONFIG_CPU_SUP_AMD) && mm->context.broadcast_asid) {
++	if (IS_ENABLED(CONFIG_CPU_SUP_AMD) && mm_broadcast_asid(mm)) {
 +		broadcast_tlb_flush(info);
 +	} else if (cpumask_any_but(mm_cpumask(mm), cpu) < nr_cpu_ids) {
  		flush_tlb_multi(mm_cpumask(mm), info);
@@ -762,7 +865,7 @@ index a2becb85bea7..d81f0692aaee 100644
  	} else if (mm == this_cpu_read(cpu_tlbstate.loaded_mm)) {
  		lockdep_assert_irqs_enabled();
  		local_irq_disable();
-@@ -1045,9 +1344,41 @@ static void do_flush_tlb_all(void *info)
+@@ -1045,9 +1341,41 @@ static void do_flush_tlb_all(void *info)
  void flush_tlb_all(void)
  {
  	count_vm_tlb_event(NR_TLB_REMOTE_FLUSH);
@@ -804,7 +907,7 @@ index a2becb85bea7..d81f0692aaee 100644
  static void do_kernel_range_flush(void *info)
  {
  	struct flush_tlb_info *f = info;
-@@ -1060,6 +1391,11 @@ static void do_kernel_range_flush(void *info)
+@@ -1060,6 +1388,11 @@ static void do_kernel_range_flush(void *info)
  
  void flush_tlb_kernel_range(unsigned long start, unsigned long end)
  {
@@ -816,7 +919,7 @@ index a2becb85bea7..d81f0692aaee 100644
  	/* Balance as user space task's flush, a bit conservative */
  	if (end == TLB_FLUSH_ALL ||
  	    (end - start) > tlb_single_page_flush_ceiling << PAGE_SHIFT) {
-@@ -1244,7 +1580,6 @@ EXPORT_SYMBOL_GPL(__flush_tlb_all);
+@@ -1244,7 +1577,6 @@ EXPORT_SYMBOL_GPL(__flush_tlb_all);
  void arch_tlbbatch_flush(struct arch_tlbflush_unmap_batch *batch)
  {
  	struct flush_tlb_info *info;
@@ -824,7 +927,7 @@ index a2becb85bea7..d81f0692aaee 100644
  	int cpu = get_cpu();
  
  	info = get_flush_tlb_info(NULL, 0, TLB_FLUSH_ALL, 0, false,
-@@ -1263,12 +1598,49 @@ void arch_tlbbatch_flush(struct arch_tlbflush_unmap_batch *batch)
+@@ -1263,12 +1595,49 @@ void arch_tlbbatch_flush(struct arch_tlbflush_unmap_batch *batch)
  		local_irq_enable();
  	}
  
@@ -849,8 +952,8 @@ index a2becb85bea7..d81f0692aaee 100644
 +					     struct mm_struct *mm,
 +					     unsigned long uaddr)
 +{
-+	if (static_cpu_has(X86_FEATURE_INVLPGB) && mm->context.broadcast_asid) {
-+		u16 asid = mm->context.broadcast_asid;
++	if (static_cpu_has(X86_FEATURE_INVLPGB) && mm_broadcast_asid(mm)) {
++		u16 asid = mm_broadcast_asid(mm);
 +		/*
 +		 * Queue up an asynchronous invalidation. The corresponding
 +		 * TLBSYNC is done in arch_tlbbatch_flush(), and must be done
@@ -874,67 +977,15 @@ index a2becb85bea7..d81f0692aaee 100644
  /*
   * Blindly accessing user memory from NMI context can be dangerous
   * if we're in the middle of switching the current user task or
-diff --git a/mm/memory.c b/mm/memory.c
-index 398c031be9ba..3d98aaf9b939 100644
---- a/mm/memory.c
-+++ b/mm/memory.c
-@@ -1935,7 +1935,6 @@ void zap_page_range_single(struct vm_area_struct *vma, unsigned long address,
- 	struct mmu_notifier_range range;
- 	struct mmu_gather tlb;
+diff --git a/arch/x86/xen/mmu_pv.c b/arch/x86/xen/mmu_pv.c
+index 55a4996d0c04..041e17282af0 100644
+--- a/arch/x86/xen/mmu_pv.c
++++ b/arch/x86/xen/mmu_pv.c
+@@ -2137,7 +2137,6 @@ static const typeof(pv_ops) xen_mmu_ops __initconst = {
+ 		.flush_tlb_kernel = xen_flush_tlb,
+ 		.flush_tlb_one_user = xen_flush_tlb_one_user,
+ 		.flush_tlb_multi = xen_flush_tlb_multi,
+-		.tlb_remove_table = tlb_remove_table,
  
--	lru_add_drain();
- 	mmu_notifier_range_init(&range, MMU_NOTIFY_CLEAR, 0, vma->vm_mm,
- 				address, end);
- 	hugetlb_zap_begin(vma, &range.start, &range.end);
-diff --git a/mm/mmap.c b/mm/mmap.c
-index d32b7e701058..ef57488f1020 100644
---- a/mm/mmap.c
-+++ b/mm/mmap.c
-@@ -1660,7 +1660,6 @@ void exit_mmap(struct mm_struct *mm)
- 		goto destroy;
- 	}
- 
--	lru_add_drain();
- 	flush_cache_mm(mm);
- 	tlb_gather_mmu_fullmm(&tlb, mm);
- 	/* update_hiwater_rss(mm) here? but nobody should be looking */
-@@ -2103,7 +2102,6 @@ int relocate_vma_down(struct vm_area_struct *vma, unsigned long shift)
- 				       vma, new_start, length, false, true))
- 		return -ENOMEM;
- 
--	lru_add_drain();
- 	tlb_gather_mmu(&tlb, mm);
- 	next = vma_next(&vmi);
- 	if (new_end > old_start) {
-diff --git a/mm/swap_state.c b/mm/swap_state.c
-index e0c0321b8ff7..ca42b2be64d9 100644
---- a/mm/swap_state.c
-+++ b/mm/swap_state.c
-@@ -317,7 +317,6 @@ void free_pages_and_swap_cache(struct encoded_page **pages, int nr)
- 	struct folio_batch folios;
- 	unsigned int refs[PAGEVEC_SIZE];
- 
--	lru_add_drain();
- 	folio_batch_init(&folios);
- 	for (int i = 0; i < nr; i++) {
- 		struct folio *folio = page_folio(encoded_page_ptr(pages[i]));
-diff --git a/mm/vma.c b/mm/vma.c
-index bb2119e5a0d0..a593d5edfd88 100644
---- a/mm/vma.c
-+++ b/mm/vma.c
-@@ -398,7 +398,6 @@ void unmap_region(struct ma_state *mas, struct vm_area_struct *vma,
- 	struct mm_struct *mm = vma->vm_mm;
- 	struct mmu_gather tlb;
- 
--	lru_add_drain();
- 	tlb_gather_mmu(&tlb, mm);
- 	update_hiwater_rss(mm);
- 	unmap_vmas(&tlb, mas, vma, vma->vm_start, vma->vm_end, vma->vm_end,
-@@ -1130,7 +1129,6 @@ static inline void vms_clear_ptes(struct vma_munmap_struct *vms,
- 	 * were isolated before we downgraded mmap_lock.
- 	 */
- 	mas_set(mas_detach, 1);
--	lru_add_drain();
- 	tlb_gather_mmu(&tlb, vms->vma->vm_mm);
- 	update_hiwater_rss(vms->vma->vm_mm);
- 	unmap_vmas(&tlb, mas_detach, vms->vma, vms->start, vms->end,
+ 		.pgd_alloc = xen_pgd_alloc,
+ 		.pgd_free = xen_pgd_free,
