@@ -84,7 +84,7 @@ index 9b1e0ede05a4..752385511b81 100644
  	struct debugfs_blob_wrapper     debugfs_vbios_blob;
  	struct debugfs_blob_wrapper     debugfs_discovery_blob;
 diff --git a/drivers/gpu/drm/amd/amdgpu/amdgpu_device.c b/drivers/gpu/drm/amd/amdgpu/amdgpu_device.c
-index 51904906545e..d5d3391cc788 100644
+index 51904906545e..2ba12047a95f 100644
 --- a/drivers/gpu/drm/amd/amdgpu/amdgpu_device.c
 +++ b/drivers/gpu/drm/amd/amdgpu/amdgpu_device.c
 @@ -145,6 +145,8 @@ const char *amdgpu_asic_name[] = {
@@ -96,7 +96,15 @@ index 51904906545e..d5d3391cc788 100644
  
  /**
   * DOC: pcie_replay_count
-@@ -4507,6 +4509,11 @@ int amdgpu_device_init(struct amdgpu_device *adev,
+@@ -3723,6 +3725,7 @@ static int amdgpu_device_ip_resume_phase3(struct amdgpu_device *adev)
+ 			r = adev->ip_blocks[i].version->funcs->resume(adev);
+ 			if (r)
+ 				return r;
++			adev->ip_blocks[i].status.hw = true;
+ 		}
+ 	}
+ 
+@@ -4507,6 +4510,11 @@ int amdgpu_device_init(struct amdgpu_device *adev,
  
  	amdgpu_device_check_iommu_direct_map(adev);
  
@@ -108,7 +116,7 @@ index 51904906545e..d5d3391cc788 100644
  	return 0;
  
  release_ras_con:
-@@ -4571,6 +4578,8 @@ void amdgpu_device_fini_hw(struct amdgpu_device *adev)
+@@ -4571,6 +4579,8 @@ void amdgpu_device_fini_hw(struct amdgpu_device *adev)
  		drain_workqueue(adev->mman.bdev.wq);
  	adev->shutdown = true;
  
@@ -117,7 +125,7 @@ index 51904906545e..d5d3391cc788 100644
  	/* make sure IB test finished before entering exclusive mode
  	 * to avoid preemption on IB test
  	 */
-@@ -4688,8 +4697,8 @@ static int amdgpu_device_evict_resources(struct amdgpu_device *adev)
+@@ -4688,8 +4698,8 @@ static int amdgpu_device_evict_resources(struct amdgpu_device *adev)
  {
  	int ret;
  
@@ -128,7 +136,7 @@ index 51904906545e..d5d3391cc788 100644
  		return 0;
  
  	ret = amdgpu_ttm_evict_resources(adev, TTM_PL_VRAM);
-@@ -4701,6 +4710,41 @@ static int amdgpu_device_evict_resources(struct amdgpu_device *adev)
+@@ -4701,6 +4711,41 @@ static int amdgpu_device_evict_resources(struct amdgpu_device *adev)
  /*
   * Suspend & resume.
   */
@@ -170,7 +178,7 @@ index 51904906545e..d5d3391cc788 100644
  /**
   * amdgpu_device_prepare - prepare for device suspend
   *
-@@ -4740,7 +4784,7 @@ int amdgpu_device_prepare(struct drm_device *dev)
+@@ -4740,7 +4785,7 @@ int amdgpu_device_prepare(struct drm_device *dev)
  	return 0;
  
  unprepare:
