@@ -366,7 +366,7 @@ index a261d7300951..3a0a380c3590 100644
  			}
  		} else {
 diff --git a/drivers/cpufreq/amd-pstate.c b/drivers/cpufreq/amd-pstate.c
-index 66e5dfc711c0..cb272dbc17eb 100644
+index 66e5dfc711c0..564570ccc7cf 100644
 --- a/drivers/cpufreq/amd-pstate.c
 +++ b/drivers/cpufreq/amd-pstate.c
 @@ -22,6 +22,7 @@
@@ -579,10 +579,10 @@ index 66e5dfc711c0..cb272dbc17eb 100644
 +	u64 value, prev;
  	int ret;
 -	struct cppc_perf_ctrls perf_ctrls;
--
+ 
 -	if (cpu_feature_enabled(X86_FEATURE_CPPC)) {
 -		u64 value = READ_ONCE(cpudata->cppc_req_cached);
- 
+-
 -		value &= ~GENMASK_ULL(31, 24);
 -		value |= (u64)epp << 24;
 -		WRITE_ONCE(cpudata->cppc_req_cached, value);
@@ -847,7 +847,18 @@ index 66e5dfc711c0..cb272dbc17eb 100644
  }
  
  /*
-@@ -905,29 +948,29 @@ static int amd_pstate_init_freq(struct amd_cpudata *cpudata)
+@@ -895,9 +938,8 @@ static int amd_pstate_init_freq(struct amd_cpudata *cpudata)
+ {
+ 	int ret;
+ 	u32 min_freq, max_freq;
+-	u32 nominal_perf, nominal_freq;
++	u32 highest_perf, nominal_perf, nominal_freq;
+ 	u32 lowest_nonlinear_perf, lowest_nonlinear_freq;
+-	u32 boost_ratio, lowest_nonlinear_ratio;
+ 	struct cppc_perf_caps cppc_perf;
+ 
+ 	ret = cppc_get_perf_caps(cpudata->cpu, &cppc_perf);
+@@ -905,29 +947,25 @@ static int amd_pstate_init_freq(struct amd_cpudata *cpudata)
  		return ret;
  
  	if (quirks && quirks->lowest_freq)
@@ -863,22 +874,23 @@ index 66e5dfc711c0..cb272dbc17eb 100644
  	else
  		nominal_freq = cppc_perf.nominal_freq;
  
++	highest_perf = READ_ONCE(cpudata->highest_perf);
  	nominal_perf = READ_ONCE(cpudata->nominal_perf);
- 
- 	boost_ratio = div_u64(cpudata->highest_perf << SCHED_CAPACITY_SHIFT, nominal_perf);
+-
+-	boost_ratio = div_u64(cpudata->highest_perf << SCHED_CAPACITY_SHIFT, nominal_perf);
 -	max_freq = (nominal_freq * boost_ratio >> SCHED_CAPACITY_SHIFT) * 1000;
-+	max_freq = (nominal_freq * boost_ratio >> SCHED_CAPACITY_SHIFT);
++	max_freq = div_u64((u64)highest_perf * nominal_freq, nominal_perf);
  
  	lowest_nonlinear_perf = READ_ONCE(cpudata->lowest_nonlinear_perf);
- 	lowest_nonlinear_ratio = div_u64(lowest_nonlinear_perf << SCHED_CAPACITY_SHIFT,
- 					 nominal_perf);
+-	lowest_nonlinear_ratio = div_u64(lowest_nonlinear_perf << SCHED_CAPACITY_SHIFT,
+-					 nominal_perf);
 -	lowest_nonlinear_freq = (nominal_freq * lowest_nonlinear_ratio >> SCHED_CAPACITY_SHIFT) * 1000;
-+	lowest_nonlinear_freq = (nominal_freq * lowest_nonlinear_ratio >> SCHED_CAPACITY_SHIFT);
- 
+-
 -	WRITE_ONCE(cpudata->min_freq, min_freq);
 -	WRITE_ONCE(cpudata->lowest_nonlinear_freq, lowest_nonlinear_freq);
 -	WRITE_ONCE(cpudata->nominal_freq, nominal_freq);
 -	WRITE_ONCE(cpudata->max_freq, max_freq);
++	lowest_nonlinear_freq = div_u64((u64)nominal_freq * lowest_nonlinear_perf, nominal_perf);
 +	WRITE_ONCE(cpudata->min_freq, min_freq * 1000);
 +	WRITE_ONCE(cpudata->lowest_nonlinear_freq, lowest_nonlinear_freq * 1000);
 +	WRITE_ONCE(cpudata->nominal_freq, nominal_freq * 1000);
@@ -886,7 +898,7 @@ index 66e5dfc711c0..cb272dbc17eb 100644
  
  	/**
  	 * Below values need to be initialized correctly, otherwise driver will fail to load
-@@ -937,13 +980,13 @@ static int amd_pstate_init_freq(struct amd_cpudata *cpudata)
+@@ -937,13 +975,13 @@ static int amd_pstate_init_freq(struct amd_cpudata *cpudata)
  	 */
  	if (min_freq <= 0 || max_freq <= 0 || nominal_freq <= 0 || min_freq > max_freq) {
  		pr_err("min_freq(%d) or max_freq(%d) or nominal_freq(%d) value is incorrect\n",
@@ -903,7 +915,7 @@ index 66e5dfc711c0..cb272dbc17eb 100644
  		return -EINVAL;
  	}
  
-@@ -1160,7 +1203,6 @@ static ssize_t show_energy_performance_available_preferences(
+@@ -1160,7 +1198,6 @@ static ssize_t show_energy_performance_available_preferences(
  static ssize_t store_energy_performance_preference(
  		struct cpufreq_policy *policy, const char *buf, size_t count)
  {
@@ -911,7 +923,7 @@ index 66e5dfc711c0..cb272dbc17eb 100644
  	char str_preference[21];
  	ssize_t ret;
  
-@@ -1172,11 +1214,11 @@ static ssize_t store_energy_performance_preference(
+@@ -1172,11 +1209,11 @@ static ssize_t store_energy_performance_preference(
  	if (ret < 0)
  		return -EINVAL;
  
@@ -927,7 +939,7 @@ index 66e5dfc711c0..cb272dbc17eb 100644
  }
  
  static ssize_t show_energy_performance_preference(
-@@ -1185,9 +1227,22 @@ static ssize_t show_energy_performance_preference(
+@@ -1185,9 +1222,22 @@ static ssize_t show_energy_performance_preference(
  	struct amd_cpudata *cpudata = policy->driver_data;
  	int preference;
  
@@ -953,7 +965,7 @@ index 66e5dfc711c0..cb272dbc17eb 100644
  
  	return sysfs_emit(buf, "%s\n", energy_perf_strings[preference]);
  }
-@@ -1236,6 +1291,9 @@ static int amd_pstate_register_driver(int mode)
+@@ -1236,6 +1286,9 @@ static int amd_pstate_register_driver(int mode)
  		return ret;
  	}
  
@@ -963,7 +975,7 @@ index 66e5dfc711c0..cb272dbc17eb 100644
  	ret = cpufreq_register_driver(current_pstate_driver);
  	if (ret) {
  		amd_pstate_driver_cleanup();
-@@ -1340,13 +1398,10 @@ EXPORT_SYMBOL_GPL(amd_pstate_update_status);
+@@ -1340,13 +1393,10 @@ EXPORT_SYMBOL_GPL(amd_pstate_update_status);
  static ssize_t status_show(struct device *dev,
  			   struct device_attribute *attr, char *buf)
  {
@@ -979,7 +991,7 @@ index 66e5dfc711c0..cb272dbc17eb 100644
  }
  
  static ssize_t status_store(struct device *a, struct device_attribute *b,
-@@ -1355,9 +1410,8 @@ static ssize_t status_store(struct device *a, struct device_attribute *b,
+@@ -1355,9 +1405,8 @@ static ssize_t status_store(struct device *a, struct device_attribute *b,
  	char *p = memchr(buf, '\n', count);
  	int ret;
  
@@ -990,7 +1002,7 @@ index 66e5dfc711c0..cb272dbc17eb 100644
  
  	return ret < 0 ? ret : count;
  }
-@@ -1451,7 +1505,6 @@ static int amd_pstate_epp_cpu_init(struct cpufreq_policy *policy)
+@@ -1451,7 +1500,6 @@ static int amd_pstate_epp_cpu_init(struct cpufreq_policy *policy)
  		return -ENOMEM;
  
  	cpudata->cpu = policy->cpu;
@@ -998,7 +1010,7 @@ index 66e5dfc711c0..cb272dbc17eb 100644
  
  	ret = amd_pstate_init_perf(cpudata);
  	if (ret)
-@@ -1477,8 +1530,6 @@ static int amd_pstate_epp_cpu_init(struct cpufreq_policy *policy)
+@@ -1477,8 +1525,6 @@ static int amd_pstate_epp_cpu_init(struct cpufreq_policy *policy)
  
  	policy->driver_data = cpudata;
  
@@ -1007,7 +1019,7 @@ index 66e5dfc711c0..cb272dbc17eb 100644
  	policy->min = policy->cpuinfo.min_freq;
  	policy->max = policy->cpuinfo.max_freq;
  
-@@ -1489,10 +1540,13 @@ static int amd_pstate_epp_cpu_init(struct cpufreq_policy *policy)
+@@ -1489,10 +1535,13 @@ static int amd_pstate_epp_cpu_init(struct cpufreq_policy *policy)
  	 * the default cpufreq governor is neither powersave nor performance.
  	 */
  	if (amd_pstate_acpi_pm_profile_server() ||
@@ -1023,7 +1035,7 @@ index 66e5dfc711c0..cb272dbc17eb 100644
  
  	if (cpu_feature_enabled(X86_FEATURE_CPPC)) {
  		ret = rdmsrl_on_cpu(cpudata->cpu, MSR_AMD_CPPC_REQ, &value);
-@@ -1505,6 +1559,9 @@ static int amd_pstate_epp_cpu_init(struct cpufreq_policy *policy)
+@@ -1505,6 +1554,9 @@ static int amd_pstate_epp_cpu_init(struct cpufreq_policy *policy)
  			return ret;
  		WRITE_ONCE(cpudata->cppc_cap1_cached, value);
  	}
@@ -1033,7 +1045,7 @@ index 66e5dfc711c0..cb272dbc17eb 100644
  
  	current_pstate_driver->adjust_perf = NULL;
  
-@@ -1530,51 +1587,24 @@ static void amd_pstate_epp_cpu_exit(struct cpufreq_policy *policy)
+@@ -1530,51 +1582,24 @@ static void amd_pstate_epp_cpu_exit(struct cpufreq_policy *policy)
  static int amd_pstate_epp_update_limit(struct cpufreq_policy *policy)
  {
  	struct amd_cpudata *cpudata = policy->driver_data;
@@ -1096,7 +1108,7 @@ index 66e5dfc711c0..cb272dbc17eb 100644
  }
  
  static int amd_pstate_epp_set_policy(struct cpufreq_policy *policy)
-@@ -1603,87 +1633,63 @@ static int amd_pstate_epp_set_policy(struct cpufreq_policy *policy)
+@@ -1603,87 +1628,63 @@ static int amd_pstate_epp_set_policy(struct cpufreq_policy *policy)
  	return 0;
  }
  
@@ -1211,7 +1223,7 @@ index 66e5dfc711c0..cb272dbc17eb 100644
  }
  
  static int amd_pstate_epp_suspend(struct cpufreq_policy *policy)
-@@ -1711,12 +1717,10 @@ static int amd_pstate_epp_resume(struct cpufreq_policy *policy)
+@@ -1711,12 +1712,10 @@ static int amd_pstate_epp_resume(struct cpufreq_policy *policy)
  	struct amd_cpudata *cpudata = policy->driver_data;
  
  	if (cpudata->suspended) {
@@ -1226,7 +1238,7 @@ index 66e5dfc711c0..cb272dbc17eb 100644
  
  		cpudata->suspended = false;
  	}
-@@ -1869,6 +1873,8 @@ static int __init amd_pstate_init(void)
+@@ -1869,6 +1868,8 @@ static int __init amd_pstate_init(void)
  		static_call_update(amd_pstate_cppc_enable, shmem_cppc_enable);
  		static_call_update(amd_pstate_init_perf, shmem_init_perf);
  		static_call_update(amd_pstate_update_perf, shmem_update_perf);
