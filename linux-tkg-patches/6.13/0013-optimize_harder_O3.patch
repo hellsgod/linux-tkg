@@ -1,16 +1,17 @@
 diff --git a/Makefile b/Makefile
+index 7904d5d88088..cbdc55659e19 100644
 --- a/Makefile
 +++ b/Makefile
-@@ -442,7 +442,7 @@ endif
+@@ -462,7 +462,7 @@ HOSTRUSTC = rustc
  HOSTPKG_CONFIG	= pkg-config
-
+ 
  KBUILD_USERHOSTCFLAGS := -Wall -Wmissing-prototypes -Wstrict-prototypes \
 -			 -O2 -fomit-frame-pointer -std=gnu11
 +			 -O3 -fomit-frame-pointer -std=gnu11
  KBUILD_USERCFLAGS  := $(KBUILD_USERHOSTCFLAGS) $(USERCFLAGS)
  KBUILD_USERLDFLAGS := $(USERLDFLAGS)
-
-@@ -474,7 +474,7 @@ endif
+ 
+@@ -491,7 +491,7 @@ export rust_common_flags := --edition=2021 \
  
  KBUILD_HOSTCFLAGS   := $(KBUILD_USERHOSTCFLAGS) $(HOST_LFS_CFLAGS) \
  		       $(HOSTCFLAGS) -I $(srctree)/scripts/include
@@ -19,9 +20,9 @@ diff --git a/Makefile b/Makefile
  		       -I $(srctree)/scripts/include
  KBUILD_HOSTRUSTFLAGS := $(rust_common_flags) -O -Cstrip=debuginfo \
  			-Zallow-features= $(HOSTRUSTFLAGS)
-@@ -757,7 +757,7 @@ KBUILD_CFLAGS       += $(call cc-disable-warning, format-overflow)
- KBUILD_CFLAGS  += $(call cc-disable-warning, address-of-packed-member)
-
+@@ -858,7 +858,7 @@ endif # need-config
+ KBUILD_CFLAGS	+= -fno-delete-null-pointer-checks
+ 
  ifdef CONFIG_CC_OPTIMIZE_FOR_PERFORMANCE
 -KBUILD_CFLAGS += -O2
 +KBUILD_CFLAGS += -O3
