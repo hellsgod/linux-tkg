@@ -1,4 +1,8 @@
-ZEN: mm: Stop kswapd early when nothing's waiting for it to free pages
+From 1f7d77670f1316bf748f477bcc0637363168303b Mon Sep 17 00:00:00 2001
+From: Sultan Alsawaf <sultan@kerneltoast.com>
+Date: Sun, 19 Apr 2020 19:59:18 -0700
+Subject: [PATCH 01/16] ZEN: mm: Stop kswapd early when nothing's waiting for
+ it to free pages
 
 Contains:
   - mm: Stop kswapd early when nothing's waiting for it to free pages
@@ -31,20 +35,234 @@ Contains:
     counter when such direct reclaimers become throttled fixes the problem.
 
     Signed-off-by: Sultan Alsawaf <sultan@kerneltoast.com>
+---
+ mm/internal.h   |  1 +
+ mm/page_alloc.c | 17 ++++++++++++++---
+ mm/vmscan.c     | 19 +++++++++++++------
+ 3 files changed, 28 insertions(+), 9 deletions(-)
+
+diff --git a/mm/internal.h b/mm/internal.h
+index cb8d8e8e3ffa..dc330de41a7e 100644
+--- a/mm/internal.h
++++ b/mm/internal.h
+@@ -740,6 +740,7 @@ extern void post_alloc_hook(struct page *page, unsigned int order,
+ extern bool free_pages_prepare(struct page *page, unsigned int order);
+ 
+ extern int user_min_free_kbytes;
++extern atomic_long_t kswapd_waiters;
+ 
+ void free_unref_page(struct page *page, unsigned int order);
+ void free_unref_folios(struct folio_batch *fbatch);
+diff --git a/mm/page_alloc.c b/mm/page_alloc.c
+index 1cb4b8c8886d..4a2aa862e9f9 100644
+--- a/mm/page_alloc.c
++++ b/mm/page_alloc.c
+@@ -88,6 +88,8 @@ typedef int __bitwise fpi_t;
+  */
+ #define FPI_TO_TAIL		((__force fpi_t)BIT(1))
+ 
++atomic_long_t kswapd_waiters = ATOMIC_LONG_INIT(0);
++
+ /* prevent >1 _updater_ of zone percpu pageset ->high and ->batch fields */
+ static DEFINE_MUTEX(pcp_batch_high_lock);
+ #define MIN_PERCPU_PAGELIST_HIGH_FRACTION (8)
+@@ -4218,6 +4220,7 @@ __alloc_pages_slowpath(gfp_t gfp_mask, unsigned int order,
+ 	unsigned int cpuset_mems_cookie;
+ 	unsigned int zonelist_iter_cookie;
+ 	int reserve_flags;
++	bool woke_kswapd = false;
+ 
+ 	if (unlikely(nofail)) {
+ 		/*
+@@ -4276,8 +4279,13 @@ __alloc_pages_slowpath(gfp_t gfp_mask, unsigned int order,
+ 			goto nopage;
+ 	}
+ 
+-	if (alloc_flags & ALLOC_KSWAPD)
++	if (alloc_flags & ALLOC_KSWAPD) {
++		if (!woke_kswapd) {
++			atomic_long_inc(&kswapd_waiters);
++			woke_kswapd = true;
++		}
+ 		wake_all_kswapds(order, gfp_mask, ac);
++	}
+ 
+ 	/*
+ 	 * The adjusted alloc_flags might result in immediate success, so try
+@@ -4479,9 +4487,12 @@ __alloc_pages_slowpath(gfp_t gfp_mask, unsigned int order,
+ 		goto retry;
+ 	}
+ fail:
+-	warn_alloc(gfp_mask, ac->nodemask,
+-			"page allocation failure: order:%u", order);
+ got_pg:
++	if (woke_kswapd)
++		atomic_long_dec(&kswapd_waiters);
++	if (!page)
++		warn_alloc(gfp_mask, ac->nodemask,
++				"page allocation failure: order:%u", order);
+ 	return page;
+ }
+ 
+diff --git a/mm/vmscan.c b/mm/vmscan.c
+index 76378bc257e3..dd94163794d0 100644
+--- a/mm/vmscan.c
++++ b/mm/vmscan.c
+@@ -6360,7 +6360,7 @@ static unsigned long do_try_to_free_pages(struct zonelist *zonelist,
+ 	return 0;
+ }
+ 
+-static bool allow_direct_reclaim(pg_data_t *pgdat)
++static bool allow_direct_reclaim(pg_data_t *pgdat, bool using_kswapd)
+ {
+ 	struct zone *zone;
+ 	unsigned long pfmemalloc_reserve = 0;
+@@ -6389,6 +6389,10 @@ static bool allow_direct_reclaim(pg_data_t *pgdat)
+ 
+ 	wmark_ok = free_pages > pfmemalloc_reserve / 2;
+ 
++	/* The throttled direct reclaimer is now a kswapd waiter */
++	if (unlikely(!using_kswapd && !wmark_ok))
++		atomic_long_inc(&kswapd_waiters);
++
+ 	/* kswapd must be awake if processes are being throttled */
+ 	if (!wmark_ok && waitqueue_active(&pgdat->kswapd_wait)) {
+ 		if (READ_ONCE(pgdat->kswapd_highest_zoneidx) > ZONE_NORMAL)
+@@ -6454,7 +6458,7 @@ static bool throttle_direct_reclaim(gfp_t gfp_mask, struct zonelist *zonelist,
+ 
+ 		/* Throttle based on the first usable node */
+ 		pgdat = zone->zone_pgdat;
+-		if (allow_direct_reclaim(pgdat))
++		if (allow_direct_reclaim(pgdat, gfp_mask & __GFP_KSWAPD_RECLAIM))
+ 			goto out;
+ 		break;
+ 	}
+@@ -6476,11 +6480,14 @@ static bool throttle_direct_reclaim(gfp_t gfp_mask, struct zonelist *zonelist,
+ 	 */
+ 	if (!(gfp_mask & __GFP_FS))
+ 		wait_event_interruptible_timeout(pgdat->pfmemalloc_wait,
+-			allow_direct_reclaim(pgdat), HZ);
++			allow_direct_reclaim(pgdat, true), HZ);
+ 	else
+ 		/* Throttle until kswapd wakes the process */
+ 		wait_event_killable(zone->zone_pgdat->pfmemalloc_wait,
+-			allow_direct_reclaim(pgdat));
++			allow_direct_reclaim(pgdat, true));
++
++	if (unlikely(!(gfp_mask & __GFP_KSWAPD_RECLAIM)))
++		atomic_long_dec(&kswapd_waiters);
+ 
+ 	if (fatal_signal_pending(current))
+ 		return true;
+@@ -6983,14 +6990,14 @@ static int balance_pgdat(pg_data_t *pgdat, int order, int highest_zoneidx)
+ 		 * able to safely make forward progress. Wake them
+ 		 */
+ 		if (waitqueue_active(&pgdat->pfmemalloc_wait) &&
+-				allow_direct_reclaim(pgdat))
++				allow_direct_reclaim(pgdat, true))
+ 			wake_up_all(&pgdat->pfmemalloc_wait);
+ 
+ 		/* Check if kswapd should be suspending */
+ 		__fs_reclaim_release(_THIS_IP_);
+ 		ret = kthread_freezable_should_stop(&was_frozen);
+ 		__fs_reclaim_acquire(_THIS_IP_);
+-		if (was_frozen || ret)
++		if (was_frozen || ret || !atomic_long_read(&kswapd_waiters))
+ 			break;
+ 
+ 		/*
+-- 
+2.48.0
 
 
-sched/core: add some branch hints based on gcov analysis
+From b780f8d996107c2ff4864680d49d4bcf7657e6ec Mon Sep 17 00:00:00 2001
+From: Colin Ian King <colin.king@intel.com>
+Date: Wed, 1 Feb 2023 11:53:51 +0000
+Subject: [PATCH 02/16] sched/core: add some branch hints based on gcov
+ analysis
 
 Signed-off-by: Colin Ian King <colin.king@intel.com>
+---
+ kernel/sched/core.c | 8 ++++----
+ 1 file changed, 4 insertions(+), 4 deletions(-)
+
+diff --git a/kernel/sched/core.c b/kernel/sched/core.c
+index 95e40895a519..a33f2dc666de 100644
+--- a/kernel/sched/core.c
++++ b/kernel/sched/core.c
+@@ -594,7 +594,7 @@ void raw_spin_rq_lock_nested(struct rq *rq, int subclass)
+ 
+ 	/* Matches synchronize_rcu() in __sched_core_enable() */
+ 	preempt_disable();
+-	if (sched_core_disabled()) {
++	if (likely(sched_core_disabled())) {
+ 		raw_spin_lock_nested(&rq->__lock, subclass);
+ 		/* preempt_count *MUST* be > 1 */
+ 		preempt_enable_no_resched();
+@@ -802,7 +802,7 @@ void update_rq_clock(struct rq *rq)
+ #endif
+ 
+ 	delta = sched_clock_cpu(cpu_of(rq)) - rq->clock;
+-	if (delta < 0)
++	if (unlikely(delta < 0))
+ 		return;
+ 	rq->clock += delta;
+ 	update_rq_clock_task(rq, delta);
+@@ -6104,7 +6104,7 @@ pick_next_task(struct rq *rq, struct task_struct *prev, struct rq_flags *rf)
+ 	struct rq *rq_i;
+ 	bool need_sync;
+ 
+-	if (!sched_core_enabled(rq))
++	if (likely(!sched_core_enabled(rq)))
+ 		return __pick_next_task(rq, prev, rf);
+ 
+ 	cpu = cpu_of(rq);
+@@ -7276,7 +7276,7 @@ void rt_mutex_setprio(struct task_struct *p, struct task_struct *pi_task)
+ #if !defined(CONFIG_PREEMPTION) || defined(CONFIG_PREEMPT_DYNAMIC)
+ int __sched __cond_resched(void)
+ {
+-	if (should_resched(0)) {
++	if (unlikely(should_resched(0))) {
+ 		preempt_schedule_common();
+ 		return 1;
+ 	}
+-- 
+2.48.0
 
 
-smpboot: reuse timer calibration
+From 2a435b9f1c3d2e907cbbe537dc81a2b12797b69f Mon Sep 17 00:00:00 2001
+From: Arjan van de Ven <arjan@linux.intel.com>
+Date: Wed, 11 Feb 2015 17:28:14 -0600
+Subject: [PATCH 03/16] smpboot: reuse timer calibration
 
 NO point recalibrating for known-constant tsc ...
 saves 200ms+ of boot time.
+---
+ arch/x86/kernel/tsc.c | 3 +++
+ 1 file changed, 3 insertions(+)
+
+diff --git a/arch/x86/kernel/tsc.c b/arch/x86/kernel/tsc.c
+index 67aeaba4ba9c..dfaadb8a5925 100644
+--- a/arch/x86/kernel/tsc.c
++++ b/arch/x86/kernel/tsc.c
+@@ -1593,6 +1593,9 @@ unsigned long calibrate_delay_is_known(void)
+ 	if (!constant_tsc || !mask)
+ 		return 0;
+ 
++	if (cpu != 0)
++		return cpu_data(0).loops_per_jiffy;
++
+ 	sibling = cpumask_any_but(mask, cpu);
+ 	if (sibling < nr_cpu_ids)
+ 		return cpu_data(sibling).loops_per_jiffy;
+-- 
+2.48.0
 
 
-migrate some systemd defaults to the kernel defaults.
+From c738c9abb1a7a7ac6fe4990a2cb2a0a79fef9bfe Mon Sep 17 00:00:00 2001
+From: Auke Kok <auke-jan.h.kok@intel.com>
+Date: Thu, 2 Aug 2018 12:03:22 -0700
+Subject: [PATCH 04/16] migrate some systemd defaults to the kernel defaults.
 
 These settings are needed to prevent networking issues when
 the networking modules come up by default without explicit
@@ -52,108 +270,51 @@ settings, which breaks some cases.
 
 We don't want the modprobe settings to be read at boot time
 if we're not going to do anything else ever.
+---
+ drivers/net/dummy.c             | 2 +-
+ include/uapi/linux/if_bonding.h | 2 +-
+ 2 files changed, 2 insertions(+), 2 deletions(-)
+
+diff --git a/drivers/net/dummy.c b/drivers/net/dummy.c
+index 005d79975f3b..a5e088ebda09 100644
+--- a/drivers/net/dummy.c
++++ b/drivers/net/dummy.c
+@@ -43,7 +43,7 @@
+ 
+ #define DRV_NAME	"dummy"
+ 
+-static int numdummies = 1;
++static int numdummies = 0;
+ 
+ /* fake multicast ability */
+ static void set_multicast_list(struct net_device *dev)
+diff --git a/include/uapi/linux/if_bonding.h b/include/uapi/linux/if_bonding.h
+index d174914a837d..bf8e2af101a3 100644
+--- a/include/uapi/linux/if_bonding.h
++++ b/include/uapi/linux/if_bonding.h
+@@ -82,7 +82,7 @@
+ #define BOND_STATE_ACTIVE       0   /* link is active */
+ #define BOND_STATE_BACKUP       1   /* link is backup */
+ 
+-#define BOND_DEFAULT_MAX_BONDS  1   /* Default maximum number of devices to support */
++#define BOND_DEFAULT_MAX_BONDS  0   /* Default maximum number of devices to support */
+ 
+ #define BOND_DEFAULT_TX_QUEUES 16   /* Default number of tx queues per device */
+ 
+-- 
+2.48.0
 
 
-itmt_epb: use epb to scale itmt
+From 57a8812c91a8044a13ae5ec6c2dc9ddef7118379 Mon Sep 17 00:00:00 2001
+From: Arjan van de Ven <arjan.van.de.ven@intel.com>
+Date: Tue, 16 Nov 2021 17:39:25 +0000
+Subject: [PATCH 05/16] itmt_epb: use epb to scale itmt
 
-
-itmt2 ADL fixes
-
-On systems with overclocking enabled, CPPC Highest Performance can be
-hard coded to 0xff. In this case even if we have cores with different
-highest performance, ITMT can't be enabled as the current implementation
-depends on CPPC Highest Performance.
-
-On such systems we can use MSR_HWP_CAPABILITIES maximum performance field
-when CPPC.Highest Performance is 0xff.
-
-Due to legacy reasons, we can't solely depend on MSR_HWP_CAPABILITIES as
-in some older systems CPPC Highest Performance is the only way to identify
-different performing cores.
-
-Signed-off-by: Srinivas Pandruvada <srinivas.pandruvada@linux.intel.com>
-
-
-add a per cpu minimum high watermark an tune batch size
-
-make sure there's at least 1024 per cpu pages... a reasonably small
-amount for todays system
-
-
-md/raid6 algorithms: scale test duration for speedier boots
-
-Instead of using jiffies and waiting for jiffies to wrap before
-measuring use the higher precision local_time for benchmarking.
-Measure 2500 loops, which works out to be accurate enough for
-benchmarking the raid algo data rates. Also add division by zero
-checking in case timing measurements are bogus.
-
-Speeds up raid benchmarking from 48,000 usecs to 4000 usecs, saving
-0.044 seconds on boot.
-
-Signed-off-by: Colin Ian King <colin.king@intel.com>
-
-
-clocksource: only perform extended clocksource checks for AMD systems
-
-Signed-off-by: Colin Ian King <colin.king@intel.com>
-
-
-ACPI: align slab for improved memory performance
-
-Enabling SLAB_HWCACHE_ALIGN for the ACPI object caches improves
-boot speed in the ACPICA core for object allocation and free'ing
-especially in the AML parsing and execution phases in boot. Testing
-with 100 boots shows an average boot saving in acpi_init of ~35000
-usecs compared to the unaligned version. Most of the ACPI objects
-being allocated and free'd are of very short life times in the
-critical paths for parsing and execution, so the extra memory used
-for alignment isn't too onerous.
-
-Signed-off-by: Colin Ian King <colin.king@intel.com>
-
-
-net: sock: increase default number of _SK_MEM_PACKETS to 1024
-
-scale these by a factor of 4 to improve socket performance
-
-Signed-off-by: Colin Ian King <colin.i.king@intel.com>
-
-
-clear: sched/fair: Tweak idle balance calculation
-
-Signed-off-by: Eric Naim <dnaim@cachyos.org>
-
-
-clear: fs/binfmt_elf: Properly handle memory mapping for PIE binaries
-
-Place libraries right below the binary for PIE binaries, this helps code locality
-(and thus performance).
-
-Signed-off-by: Eric Naim <dnaim@cachyos.org>
-
-
-clear: net/sock: Introduce 64KB reclaim threshold
-
-Allows more efficient memory management by reclaiming only surplus memory beyond the threshold instead of
-always calling `sk_mem_reclaim`.
-
-Signed-off-by: Eric Naim <dnaim@cachyos.org>
-
-
-clear: init/init_task: Tweak timer_slack value
-
-Signed-off-by: Eric Naim <dnaim@cachyos.org>
-
-initcall: only print non-zero initcall debug to speed up boot
-
-Printing initcall timings that successfully return after 0 usecs
-provides not much useful information and takes a small amount of time
-to do so. Disable the initcall timings for these specific cases. On
-an Alderlake i9-12900 this reduces kernel boot time by 0.67% (timed
-up to the invocation of systemd starting) based on 10 boot measurements.
-
-Signed-off-by: Colin Ian King <colin.king@intel.com>
+---
+ arch/x86/include/asm/topology.h |  1 +
+ arch/x86/kernel/cpu/intel_epb.c |  4 ++++
+ arch/x86/kernel/itmt.c          | 29 ++++++++++++++++++++++++++++-
+ 3 files changed, 33 insertions(+), 1 deletion(-)
 
 diff --git a/arch/x86/include/asm/topology.h b/arch/x86/include/asm/topology.h
 index fd41103ad342..4d9cfd78a4af 100644
@@ -233,56 +394,32 @@ index 51b805c727fc..81e7cf72e83d 100644
 +		per_cpu(sched_power_ratio, cpu) = power_ratio;
 +	}
 +}
-diff --git a/arch/x86/kernel/tsc.c b/arch/x86/kernel/tsc.c
-index 67aeaba4ba9c..dfaadb8a5925 100644
---- a/arch/x86/kernel/tsc.c
-+++ b/arch/x86/kernel/tsc.c
-@@ -1593,6 +1593,9 @@ unsigned long calibrate_delay_is_known(void)
- 	if (!constant_tsc || !mask)
- 		return 0;
- 
-+	if (cpu != 0)
-+		return cpu_data(0).loops_per_jiffy;
-+
- 	sibling = cpumask_any_but(mask, cpu);
- 	if (sibling < nr_cpu_ids)
- 		return cpu_data(sibling).loops_per_jiffy;
-diff --git a/drivers/acpi/osl.c b/drivers/acpi/osl.c
-index fed446aace42..4943959ef756 100644
---- a/drivers/acpi/osl.c
-+++ b/drivers/acpi/osl.c
-@@ -1561,7 +1561,7 @@ void acpi_os_release_lock(acpi_spinlock lockp, acpi_cpu_flags not_used)
- acpi_status
- acpi_os_create_cache(char *name, u16 size, u16 depth, acpi_cache_t **cache)
- {
--	*cache = kmem_cache_create(name, size, 0, 0, NULL);
-+	*cache = kmem_cache_create(name, size, 0, SLAB_HWCACHE_ALIGN, NULL);
- 	if (*cache == NULL)
- 		return AE_ERROR;
- 	else
-diff --git a/drivers/clocksource/acpi_pm.c b/drivers/clocksource/acpi_pm.c
-index b4330a01a566..e41cd5c68855 100644
---- a/drivers/clocksource/acpi_pm.c
-+++ b/drivers/clocksource/acpi_pm.c
-@@ -208,13 +208,16 @@ static int verify_pmtmr_rate(void)
- static int __init init_acpi_pm_clocksource(void)
- {
- 	u64 value1, value2;
--	unsigned int i, j = 0;
-+	unsigned int i, j = 0, checks = 1;
- 
- 	if (!pmtmr_ioport)
- 		return -ENODEV;
- 
-+	if (boot_cpu_data.x86_vendor == X86_VENDOR_AMD)
-+		checks = ACPI_PM_MONOTONICITY_CHECKS;
-+
- 	/* "verify" this timing source: */
--	for (j = 0; j < ACPI_PM_MONOTONICITY_CHECKS; j++) {
-+	for (j = 0; j < checks; j++) {
- 		udelay(100 * j);
- 		value1 = clocksource_acpi_pm.read(&clocksource_acpi_pm);
- 		for (i = 0; i < ACPI_PM_READ_CHECKS; i++) {
+-- 
+2.48.0
+
+
+From e27bd97a63ba0d6cffc871902c0dae51eea81ac5 Mon Sep 17 00:00:00 2001
+From: Srinivas Pandruvada <srinivas.pandruvada@linux.intel.com>
+Date: Thu, 18 Nov 2021 16:09:47 +0000
+Subject: [PATCH 06/16] itmt2 ADL fixes
+
+On systems with overclocking enabled, CPPC Highest Performance can be
+hard coded to 0xff. In this case even if we have cores with different
+highest performance, ITMT can't be enabled as the current implementation
+depends on CPPC Highest Performance.
+
+On such systems we can use MSR_HWP_CAPABILITIES maximum performance field
+when CPPC.Highest Performance is 0xff.
+
+Due to legacy reasons, we can't solely depend on MSR_HWP_CAPABILITIES as
+in some older systems CPPC Highest Performance is the only way to identify
+different performing cores.
+
+Signed-off-by: Srinivas Pandruvada <srinivas.pandruvada@linux.intel.com>
+---
+ drivers/cpufreq/intel_pstate.c | 7 +++++++
+ 1 file changed, 7 insertions(+)
+
 diff --git a/drivers/cpufreq/intel_pstate.c b/drivers/cpufreq/intel_pstate.c
 index b8e2396a708a..627b584a0a69 100644
 --- a/drivers/cpufreq/intel_pstate.c
@@ -301,163 +438,63 @@ index b8e2396a708a..627b584a0a69 100644
  
  	if (max_highest_perf <= min_highest_perf) {
  		if (cppc_perf.highest_perf > max_highest_perf)
-diff --git a/drivers/net/dummy.c b/drivers/net/dummy.c
-index 005d79975f3b..a5e088ebda09 100644
---- a/drivers/net/dummy.c
-+++ b/drivers/net/dummy.c
-@@ -43,7 +43,7 @@
+-- 
+2.48.0
+
+
+From 3d9748b2c1241fca78fefdb7a0972d2e4679888f Mon Sep 17 00:00:00 2001
+From: Arjan van de Ven <arjan.van.de.ven@intel.com>
+Date: Tue, 23 Nov 2021 17:38:50 +0000
+Subject: [PATCH 07/16] add a per cpu minimum high watermark an tune batch size
+
+make sure there's at least 1024 per cpu pages... a reasonably small
+amount for todays system
+---
+ mm/page_alloc.c | 4 ++--
+ 1 file changed, 2 insertions(+), 2 deletions(-)
+
+diff --git a/mm/page_alloc.c b/mm/page_alloc.c
+index 4a2aa862e9f9..7e239de95a00 100644
+--- a/mm/page_alloc.c
++++ b/mm/page_alloc.c
+@@ -5402,11 +5402,11 @@ static int zone_batchsize(struct zone *zone)
  
- #define DRV_NAME	"dummy"
- 
--static int numdummies = 1;
-+static int numdummies = 0;
- 
- /* fake multicast ability */
- static void set_multicast_list(struct net_device *dev)
-diff --git a/fs/binfmt_elf.c b/fs/binfmt_elf.c
-index 106f0e8af177..3f3bc55d5bcd 100644
---- a/fs/binfmt_elf.c
-+++ b/fs/binfmt_elf.c
-@@ -1288,6 +1288,8 @@ static int load_elf_binary(struct linux_binprm *bprm)
- 	mm = current->mm;
- 	mm->end_code = end_code;
- 	mm->start_code = start_code;
-+	if (start_code >= ELF_ET_DYN_BASE)
-+		mm->mmap_base = start_code;
- 	mm->start_data = start_data;
- 	mm->end_data = end_data;
- 	mm->start_stack = bprm->p;
-diff --git a/include/net/sock.h b/include/net/sock.h
-index 7464e9f9f47c..8e7325716496 100644
---- a/include/net/sock.h
-+++ b/include/net/sock.h
-@@ -1579,10 +1579,17 @@ static inline void sk_mem_charge(struct sock *sk, int size)
- 
- static inline void sk_mem_uncharge(struct sock *sk, int size)
- {
-+	int reclaimable, reclaim_threshold;
-+
-+	reclaim_threshold = 64 * 1024;
- 	if (!sk_has_account(sk))
- 		return;
- 	sk_forward_alloc_add(sk, size);
--	sk_mem_reclaim(sk);
-+	reclaimable = sk->sk_forward_alloc - sk_unused_reserved_mem(sk);
-+	if (reclaimable > reclaim_threshold) {
-+		reclaimable -= reclaim_threshold;
-+		__sk_mem_reclaim(sk, reclaimable);
-+	}
- }
- 
- /*
-@@ -2842,7 +2849,7 @@ void sk_get_meminfo(const struct sock *sk, u32 *meminfo);
-  * platforms.  This makes socket queueing behavior and performance
-  * not depend upon such differences.
-  */
--#define _SK_MEM_PACKETS		256
-+#define _SK_MEM_PACKETS		1024
- #define _SK_MEM_OVERHEAD	SKB_TRUESIZE(256)
- #define SK_WMEM_MAX		(_SK_MEM_OVERHEAD * _SK_MEM_PACKETS)
- #define SK_RMEM_MAX		(_SK_MEM_OVERHEAD * _SK_MEM_PACKETS)
-diff --git a/include/uapi/linux/if_bonding.h b/include/uapi/linux/if_bonding.h
-index d174914a837d..bf8e2af101a3 100644
---- a/include/uapi/linux/if_bonding.h
-+++ b/include/uapi/linux/if_bonding.h
-@@ -82,7 +82,7 @@
- #define BOND_STATE_ACTIVE       0   /* link is active */
- #define BOND_STATE_BACKUP       1   /* link is backup */
- 
--#define BOND_DEFAULT_MAX_BONDS  1   /* Default maximum number of devices to support */
-+#define BOND_DEFAULT_MAX_BONDS  0   /* Default maximum number of devices to support */
- 
- #define BOND_DEFAULT_TX_QUEUES 16   /* Default number of tx queues per device */
- 
-diff --git a/init/init_task.c b/init/init_task.c
-index e557f622bd90..ca1ef66774b3 100644
---- a/init/init_task.c
-+++ b/init/init_task.c
-@@ -140,7 +140,7 @@ struct task_struct init_task __aligned(L1_CACHE_BYTES) = {
- 	.journal_info	= NULL,
- 	INIT_CPU_TIMERS(init_task)
- 	.pi_lock	= __RAW_SPIN_LOCK_UNLOCKED(init_task.pi_lock),
--	.timer_slack_ns = 50000, /* 50 usec default slack */
-+	.timer_slack_ns = 50, /* 50 nsec default slack */
- 	.thread_pid	= &init_struct_pid,
- 	.thread_node	= LIST_HEAD_INIT(init_signals.thread_head),
- #ifdef CONFIG_AUDIT
-diff --git a/init/main.c b/init/main.c
-index 00fac1170294..666a06dba9cb 100644
---- a/init/main.c
-+++ b/init/main.c
-@@ -1217,10 +1217,13 @@ static __init_or_module void
- trace_initcall_finish_cb(void *data, initcall_t fn, int ret)
- {
- 	ktime_t rettime, *calltime = data;
-+	long long delta;
- 
- 	rettime = ktime_get();
--	printk(KERN_DEBUG "initcall %pS returned %d after %lld usecs\n",
--		 fn, ret, (unsigned long long)ktime_us_delta(rettime, *calltime));
-+	delta = ktime_us_delta(rettime, *calltime);
-+	if (ret || delta)
-+		printk(KERN_DEBUG "initcall %pS returned %d after %lld usecs\n",
-+			fn, ret, (unsigned long long)ktime_us_delta(rettime, *calltime));
- }
- 
- static ktime_t initcall_calltime;
-diff --git a/kernel/sched/core.c b/kernel/sched/core.c
-index 95e40895a519..a33f2dc666de 100644
---- a/kernel/sched/core.c
-+++ b/kernel/sched/core.c
-@@ -594,7 +594,7 @@ void raw_spin_rq_lock_nested(struct rq *rq, int subclass)
- 
- 	/* Matches synchronize_rcu() in __sched_core_enable() */
- 	preempt_disable();
--	if (sched_core_disabled()) {
-+	if (likely(sched_core_disabled())) {
- 		raw_spin_lock_nested(&rq->__lock, subclass);
- 		/* preempt_count *MUST* be > 1 */
- 		preempt_enable_no_resched();
-@@ -802,7 +802,7 @@ void update_rq_clock(struct rq *rq)
- #endif
- 
- 	delta = sched_clock_cpu(cpu_of(rq)) - rq->clock;
--	if (delta < 0)
-+	if (unlikely(delta < 0))
- 		return;
- 	rq->clock += delta;
- 	update_rq_clock_task(rq, delta);
-@@ -6104,7 +6104,7 @@ pick_next_task(struct rq *rq, struct task_struct *prev, struct rq_flags *rf)
- 	struct rq *rq_i;
- 	bool need_sync;
- 
--	if (!sched_core_enabled(rq))
-+	if (likely(!sched_core_enabled(rq)))
- 		return __pick_next_task(rq, prev, rf);
- 
- 	cpu = cpu_of(rq);
-@@ -7276,7 +7276,7 @@ void rt_mutex_setprio(struct task_struct *p, struct task_struct *pi_task)
- #if !defined(CONFIG_PREEMPTION) || defined(CONFIG_PREEMPT_DYNAMIC)
- int __sched __cond_resched(void)
- {
--	if (should_resched(0)) {
-+	if (unlikely(should_resched(0))) {
- 		preempt_schedule_common();
- 		return 1;
- 	}
-diff --git a/kernel/sched/fair.c b/kernel/sched/fair.c
-index fbdca89c677f..c9b63b79509a 100644
---- a/kernel/sched/fair.c
-+++ b/kernel/sched/fair.c
-@@ -12781,7 +12781,7 @@ static int sched_balance_newidle(struct rq *this_rq, struct rq_flags *rf)
- 
- 		update_next_balance(sd, &next_balance);
- 
--		if (this_rq->avg_idle < curr_cost + sd->max_newidle_lb_cost)
-+		if (this_rq->avg_idle/2 < curr_cost + sd->max_newidle_lb_cost)
- 			break;
- 
- 		if (sd->flags & SD_BALANCE_NEWIDLE) {
+ 	/*
+ 	 * The number of pages to batch allocate is either ~0.1%
+-	 * of the zone or 1MB, whichever is smaller. The batch
++	 * of the zone or 4MB, whichever is smaller. The batch
+ 	 * size is striking a balance between allocation latency
+ 	 * and zone lock contention.
+ 	 */
+-	batch = min(zone_managed_pages(zone) >> 10, SZ_1M / PAGE_SIZE);
++	batch = min(zone_managed_pages(zone) >> 10, 4 * SZ_1M / PAGE_SIZE);
+ 	batch /= 4;		/* We effectively *= 4 below */
+ 	if (batch < 1)
+ 		batch = 1;
+-- 
+2.48.0
+
+
+From 2db54042acf6fc97519ce79c059c2e206b3827af Mon Sep 17 00:00:00 2001
+From: Colin Ian King <colin.king@intel.com>
+Date: Fri, 28 Apr 2023 17:01:35 +0100
+Subject: [PATCH 08/16] md/raid6 algorithms: scale test duration for speedier
+ boots
+
+Instead of using jiffies and waiting for jiffies to wrap before
+measuring use the higher precision local_time for benchmarking.
+Measure 2500 loops, which works out to be accurate enough for
+benchmarking the raid algo data rates. Also add division by zero
+checking in case timing measurements are bogus.
+
+Speeds up raid benchmarking from 48,000 usecs to 4000 usecs, saving
+0.044 seconds on boot.
+
+Signed-off-by: Colin Ian King <colin.king@intel.com>
+---
+ lib/raid6/algos.c | 53 ++++++++++++++++++++---------------------------
+ 1 file changed, 22 insertions(+), 31 deletions(-)
+
 diff --git a/lib/raid6/algos.c b/lib/raid6/algos.c
 index cd2e88ee1f14..b846635542bc 100644
 --- a/lib/raid6/algos.c
@@ -563,147 +600,280 @@ index cd2e88ee1f14..b846635542bc 100644
  out:
  	return best;
  }
-diff --git a/mm/internal.h b/mm/internal.h
-index cb8d8e8e3ffa..dc330de41a7e 100644
---- a/mm/internal.h
-+++ b/mm/internal.h
-@@ -740,6 +740,7 @@ extern void post_alloc_hook(struct page *page, unsigned int order,
- extern bool free_pages_prepare(struct page *page, unsigned int order);
- 
- extern int user_min_free_kbytes;
-+extern atomic_long_t kswapd_waiters;
- 
- void free_unref_page(struct page *page, unsigned int order);
- void free_unref_folios(struct folio_batch *fbatch);
-diff --git a/mm/page_alloc.c b/mm/page_alloc.c
-index 1cb4b8c8886d..7e239de95a00 100644
---- a/mm/page_alloc.c
-+++ b/mm/page_alloc.c
-@@ -88,6 +88,8 @@ typedef int __bitwise fpi_t;
-  */
- #define FPI_TO_TAIL		((__force fpi_t)BIT(1))
- 
-+atomic_long_t kswapd_waiters = ATOMIC_LONG_INIT(0);
-+
- /* prevent >1 _updater_ of zone percpu pageset ->high and ->batch fields */
- static DEFINE_MUTEX(pcp_batch_high_lock);
- #define MIN_PERCPU_PAGELIST_HIGH_FRACTION (8)
-@@ -4218,6 +4220,7 @@ __alloc_pages_slowpath(gfp_t gfp_mask, unsigned int order,
- 	unsigned int cpuset_mems_cookie;
- 	unsigned int zonelist_iter_cookie;
- 	int reserve_flags;
-+	bool woke_kswapd = false;
- 
- 	if (unlikely(nofail)) {
- 		/*
-@@ -4276,8 +4279,13 @@ __alloc_pages_slowpath(gfp_t gfp_mask, unsigned int order,
- 			goto nopage;
- 	}
- 
--	if (alloc_flags & ALLOC_KSWAPD)
-+	if (alloc_flags & ALLOC_KSWAPD) {
-+		if (!woke_kswapd) {
-+			atomic_long_inc(&kswapd_waiters);
-+			woke_kswapd = true;
-+		}
- 		wake_all_kswapds(order, gfp_mask, ac);
-+	}
- 
- 	/*
- 	 * The adjusted alloc_flags might result in immediate success, so try
-@@ -4479,9 +4487,12 @@ __alloc_pages_slowpath(gfp_t gfp_mask, unsigned int order,
- 		goto retry;
- 	}
- fail:
--	warn_alloc(gfp_mask, ac->nodemask,
--			"page allocation failure: order:%u", order);
- got_pg:
-+	if (woke_kswapd)
-+		atomic_long_dec(&kswapd_waiters);
-+	if (!page)
-+		warn_alloc(gfp_mask, ac->nodemask,
-+				"page allocation failure: order:%u", order);
- 	return page;
- }
- 
-@@ -5391,11 +5402,11 @@ static int zone_batchsize(struct zone *zone)
- 
- 	/*
- 	 * The number of pages to batch allocate is either ~0.1%
--	 * of the zone or 1MB, whichever is smaller. The batch
-+	 * of the zone or 4MB, whichever is smaller. The batch
- 	 * size is striking a balance between allocation latency
- 	 * and zone lock contention.
- 	 */
--	batch = min(zone_managed_pages(zone) >> 10, SZ_1M / PAGE_SIZE);
-+	batch = min(zone_managed_pages(zone) >> 10, 4 * SZ_1M / PAGE_SIZE);
- 	batch /= 4;		/* We effectively *= 4 below */
- 	if (batch < 1)
- 		batch = 1;
-diff --git a/mm/vmscan.c b/mm/vmscan.c
-index 76378bc257e3..dd94163794d0 100644
---- a/mm/vmscan.c
-+++ b/mm/vmscan.c
-@@ -6360,7 +6360,7 @@ static unsigned long do_try_to_free_pages(struct zonelist *zonelist,
- 	return 0;
- }
- 
--static bool allow_direct_reclaim(pg_data_t *pgdat)
-+static bool allow_direct_reclaim(pg_data_t *pgdat, bool using_kswapd)
+-- 
+2.48.0
+
+
+From 7766c59f3e6c75ad5407db2c8a7dfc4ddc1d360e Mon Sep 17 00:00:00 2001
+From: Colin Ian King <colin.king@intel.com>
+Date: Wed, 3 May 2023 17:31:05 +0100
+Subject: [PATCH 09/16] clocksource: only perform extended clocksource checks
+ for AMD systems
+
+Signed-off-by: Colin Ian King <colin.king@intel.com>
+---
+ drivers/clocksource/acpi_pm.c | 7 +++++--
+ 1 file changed, 5 insertions(+), 2 deletions(-)
+
+diff --git a/drivers/clocksource/acpi_pm.c b/drivers/clocksource/acpi_pm.c
+index b4330a01a566..e41cd5c68855 100644
+--- a/drivers/clocksource/acpi_pm.c
++++ b/drivers/clocksource/acpi_pm.c
+@@ -208,13 +208,16 @@ static int verify_pmtmr_rate(void)
+ static int __init init_acpi_pm_clocksource(void)
  {
- 	struct zone *zone;
- 	unsigned long pfmemalloc_reserve = 0;
-@@ -6389,6 +6389,10 @@ static bool allow_direct_reclaim(pg_data_t *pgdat)
+ 	u64 value1, value2;
+-	unsigned int i, j = 0;
++	unsigned int i, j = 0, checks = 1;
  
- 	wmark_ok = free_pages > pfmemalloc_reserve / 2;
+ 	if (!pmtmr_ioport)
+ 		return -ENODEV;
  
-+	/* The throttled direct reclaimer is now a kswapd waiter */
-+	if (unlikely(!using_kswapd && !wmark_ok))
-+		atomic_long_inc(&kswapd_waiters);
++	if (boot_cpu_data.x86_vendor == X86_VENDOR_AMD)
++		checks = ACPI_PM_MONOTONICITY_CHECKS;
 +
- 	/* kswapd must be awake if processes are being throttled */
- 	if (!wmark_ok && waitqueue_active(&pgdat->kswapd_wait)) {
- 		if (READ_ONCE(pgdat->kswapd_highest_zoneidx) > ZONE_NORMAL)
-@@ -6454,7 +6458,7 @@ static bool throttle_direct_reclaim(gfp_t gfp_mask, struct zonelist *zonelist,
- 
- 		/* Throttle based on the first usable node */
- 		pgdat = zone->zone_pgdat;
--		if (allow_direct_reclaim(pgdat))
-+		if (allow_direct_reclaim(pgdat, gfp_mask & __GFP_KSWAPD_RECLAIM))
- 			goto out;
- 		break;
- 	}
-@@ -6476,11 +6480,14 @@ static bool throttle_direct_reclaim(gfp_t gfp_mask, struct zonelist *zonelist,
- 	 */
- 	if (!(gfp_mask & __GFP_FS))
- 		wait_event_interruptible_timeout(pgdat->pfmemalloc_wait,
--			allow_direct_reclaim(pgdat), HZ);
-+			allow_direct_reclaim(pgdat, true), HZ);
+ 	/* "verify" this timing source: */
+-	for (j = 0; j < ACPI_PM_MONOTONICITY_CHECKS; j++) {
++	for (j = 0; j < checks; j++) {
+ 		udelay(100 * j);
+ 		value1 = clocksource_acpi_pm.read(&clocksource_acpi_pm);
+ 		for (i = 0; i < ACPI_PM_READ_CHECKS; i++) {
+-- 
+2.48.0
+
+
+From 085b219016d0d489f994eed534311b16b793e750 Mon Sep 17 00:00:00 2001
+From: Colin Ian King <colin.king@intel.com>
+Date: Tue, 27 Jun 2023 14:12:27 +0100
+Subject: [PATCH 10/16] ACPI: align slab for improved memory performance
+
+Enabling SLAB_HWCACHE_ALIGN for the ACPI object caches improves
+boot speed in the ACPICA core for object allocation and free'ing
+especially in the AML parsing and execution phases in boot. Testing
+with 100 boots shows an average boot saving in acpi_init of ~35000
+usecs compared to the unaligned version. Most of the ACPI objects
+being allocated and free'd are of very short life times in the
+critical paths for parsing and execution, so the extra memory used
+for alignment isn't too onerous.
+
+Signed-off-by: Colin Ian King <colin.king@intel.com>
+---
+ drivers/acpi/osl.c | 2 +-
+ 1 file changed, 1 insertion(+), 1 deletion(-)
+
+diff --git a/drivers/acpi/osl.c b/drivers/acpi/osl.c
+index fed446aace42..4943959ef756 100644
+--- a/drivers/acpi/osl.c
++++ b/drivers/acpi/osl.c
+@@ -1561,7 +1561,7 @@ void acpi_os_release_lock(acpi_spinlock lockp, acpi_cpu_flags not_used)
+ acpi_status
+ acpi_os_create_cache(char *name, u16 size, u16 depth, acpi_cache_t **cache)
+ {
+-	*cache = kmem_cache_create(name, size, 0, 0, NULL);
++	*cache = kmem_cache_create(name, size, 0, SLAB_HWCACHE_ALIGN, NULL);
+ 	if (*cache == NULL)
+ 		return AE_ERROR;
  	else
- 		/* Throttle until kswapd wakes the process */
- 		wait_event_killable(zone->zone_pgdat->pfmemalloc_wait,
--			allow_direct_reclaim(pgdat));
-+			allow_direct_reclaim(pgdat, true));
-+
-+	if (unlikely(!(gfp_mask & __GFP_KSWAPD_RECLAIM)))
-+		atomic_long_dec(&kswapd_waiters);
+-- 
+2.48.0
+
+
+From b6d65a69fbbd3052a923ed77f5fdf6e69b438831 Mon Sep 17 00:00:00 2001
+From: Colin Ian King <colin.i.king@intel.com>
+Date: Wed, 24 Apr 2024 16:45:47 +0100
+Subject: [PATCH 11/16] net: sock: increase default number of _SK_MEM_PACKETS
+ to 1024
+
+scale these by a factor of 4 to improve socket performance
+
+Signed-off-by: Colin Ian King <colin.i.king@intel.com>
+---
+ include/net/sock.h | 2 +-
+ 1 file changed, 1 insertion(+), 1 deletion(-)
+
+diff --git a/include/net/sock.h b/include/net/sock.h
+index 7464e9f9f47c..6360e0a8be30 100644
+--- a/include/net/sock.h
++++ b/include/net/sock.h
+@@ -2842,7 +2842,7 @@ void sk_get_meminfo(const struct sock *sk, u32 *meminfo);
+  * platforms.  This makes socket queueing behavior and performance
+  * not depend upon such differences.
+  */
+-#define _SK_MEM_PACKETS		256
++#define _SK_MEM_PACKETS		1024
+ #define _SK_MEM_OVERHEAD	SKB_TRUESIZE(256)
+ #define SK_WMEM_MAX		(_SK_MEM_OVERHEAD * _SK_MEM_PACKETS)
+ #define SK_RMEM_MAX		(_SK_MEM_OVERHEAD * _SK_MEM_PACKETS)
+-- 
+2.48.0
+
+
+From 9f613c2a0ca3426b2a09d7532a4de77381410bf9 Mon Sep 17 00:00:00 2001
+From: Eric Naim <dnaim@cachyos.org>
+Date: Sun, 20 Oct 2024 17:11:19 +0800
+Subject: [PATCH 12/16] clear: sched/fair: Tweak idle balance calculation
+
+Signed-off-by: Eric Naim <dnaim@cachyos.org>
+---
+ kernel/sched/fair.c | 2 +-
+ 1 file changed, 1 insertion(+), 1 deletion(-)
+
+diff --git a/kernel/sched/fair.c b/kernel/sched/fair.c
+index fbdca89c677f..c9b63b79509a 100644
+--- a/kernel/sched/fair.c
++++ b/kernel/sched/fair.c
+@@ -12781,7 +12781,7 @@ static int sched_balance_newidle(struct rq *this_rq, struct rq_flags *rf)
  
- 	if (fatal_signal_pending(current))
- 		return true;
-@@ -6983,14 +6990,14 @@ static int balance_pgdat(pg_data_t *pgdat, int order, int highest_zoneidx)
- 		 * able to safely make forward progress. Wake them
- 		 */
- 		if (waitqueue_active(&pgdat->pfmemalloc_wait) &&
--				allow_direct_reclaim(pgdat))
-+				allow_direct_reclaim(pgdat, true))
- 			wake_up_all(&pgdat->pfmemalloc_wait);
+ 		update_next_balance(sd, &next_balance);
  
- 		/* Check if kswapd should be suspending */
- 		__fs_reclaim_release(_THIS_IP_);
- 		ret = kthread_freezable_should_stop(&was_frozen);
- 		__fs_reclaim_acquire(_THIS_IP_);
--		if (was_frozen || ret)
-+		if (was_frozen || ret || !atomic_long_read(&kswapd_waiters))
+-		if (this_rq->avg_idle < curr_cost + sd->max_newidle_lb_cost)
++		if (this_rq->avg_idle/2 < curr_cost + sd->max_newidle_lb_cost)
  			break;
  
- 		/*
+ 		if (sd->flags & SD_BALANCE_NEWIDLE) {
+-- 
+2.48.0
+
+
+From bb61a886ef122969bc455d9596ad2b0646f596c1 Mon Sep 17 00:00:00 2001
+From: Eric Naim <dnaim@cachyos.org>
+Date: Sun, 20 Oct 2024 17:15:25 +0800
+Subject: [PATCH 13/16] clear: fs/binfmt_elf: Properly handle memory mapping
+ for PIE binaries
+
+Place libraries right below the binary for PIE binaries, this helps code locality
+(and thus performance).
+
+Signed-off-by: Eric Naim <dnaim@cachyos.org>
+---
+ fs/binfmt_elf.c | 2 ++
+ 1 file changed, 2 insertions(+)
+
+diff --git a/fs/binfmt_elf.c b/fs/binfmt_elf.c
+index 106f0e8af177..3f3bc55d5bcd 100644
+--- a/fs/binfmt_elf.c
++++ b/fs/binfmt_elf.c
+@@ -1288,6 +1288,8 @@ static int load_elf_binary(struct linux_binprm *bprm)
+ 	mm = current->mm;
+ 	mm->end_code = end_code;
+ 	mm->start_code = start_code;
++	if (start_code >= ELF_ET_DYN_BASE)
++		mm->mmap_base = start_code;
+ 	mm->start_data = start_data;
+ 	mm->end_data = end_data;
+ 	mm->start_stack = bprm->p;
+-- 
+2.48.0
+
+
+From 064d967b75a41291f20f0c8b1b073275bf62ad1a Mon Sep 17 00:00:00 2001
+From: Eric Naim <dnaim@cachyos.org>
+Date: Sun, 20 Oct 2024 17:21:24 +0800
+Subject: [PATCH 14/16] clear: net/sock: Introduce 64KB reclaim threshold
+
+Allows more efficient memory management by reclaiming only surplus memory beyond the threshold instead of
+always calling `sk_mem_reclaim`.
+
+Signed-off-by: Eric Naim <dnaim@cachyos.org>
+---
+ include/net/sock.h | 9 ++++++++-
+ 1 file changed, 8 insertions(+), 1 deletion(-)
+
+diff --git a/include/net/sock.h b/include/net/sock.h
+index 6360e0a8be30..8e7325716496 100644
+--- a/include/net/sock.h
++++ b/include/net/sock.h
+@@ -1579,10 +1579,17 @@ static inline void sk_mem_charge(struct sock *sk, int size)
+ 
+ static inline void sk_mem_uncharge(struct sock *sk, int size)
+ {
++	int reclaimable, reclaim_threshold;
++
++	reclaim_threshold = 64 * 1024;
+ 	if (!sk_has_account(sk))
+ 		return;
+ 	sk_forward_alloc_add(sk, size);
+-	sk_mem_reclaim(sk);
++	reclaimable = sk->sk_forward_alloc - sk_unused_reserved_mem(sk);
++	if (reclaimable > reclaim_threshold) {
++		reclaimable -= reclaim_threshold;
++		__sk_mem_reclaim(sk, reclaimable);
++	}
+ }
+ 
+ /*
+-- 
+2.48.0
+
+
+From b8456d890b87e672c9f1992bf2cd0d7e305521de Mon Sep 17 00:00:00 2001
+From: Eric Naim <dnaim@cachyos.org>
+Date: Sun, 20 Oct 2024 17:25:10 +0800
+Subject: [PATCH 15/16] clear: init/init_task: Tweak timer_slack value
+
+Signed-off-by: Eric Naim <dnaim@cachyos.org>
+---
+ init/init_task.c | 2 +-
+ 1 file changed, 1 insertion(+), 1 deletion(-)
+
+diff --git a/init/init_task.c b/init/init_task.c
+index e557f622bd90..ca1ef66774b3 100644
+--- a/init/init_task.c
++++ b/init/init_task.c
+@@ -140,7 +140,7 @@ struct task_struct init_task __aligned(L1_CACHE_BYTES) = {
+ 	.journal_info	= NULL,
+ 	INIT_CPU_TIMERS(init_task)
+ 	.pi_lock	= __RAW_SPIN_LOCK_UNLOCKED(init_task.pi_lock),
+-	.timer_slack_ns = 50000, /* 50 usec default slack */
++	.timer_slack_ns = 50, /* 50 nsec default slack */
+ 	.thread_pid	= &init_struct_pid,
+ 	.thread_node	= LIST_HEAD_INIT(init_signals.thread_head),
+ #ifdef CONFIG_AUDIT
+-- 
+2.48.0
+
+
+From 26bd7484270b77dcffc0a7d3d4984fc9c996dabd Mon Sep 17 00:00:00 2001
+From: Colin Ian King <colin.king@intel.com>
+Date: Fri, 20 Jan 2023 11:16:42 +0000
+Subject: [PATCH 16/16] initcall: only print non-zero initcall debug to speed
+ up boot
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+Printing initcall timings that successfully return after 0 usecs
+provides not much useful information and takes a small amount of time
+to do so. Disable the initcall timings for these specific cases. On
+an Alderlake i9-12900 this reduces kernel boot time by 0.67% (timed
+up to the invocation of systemd starting) based on 10 boot measurements.
+
+Signed-off-by: Colin Ian King <colin.king@intel.com>
+Signed-off-by: Simão Gomes Viana <simao@halogenos.org>
+Signed-off-by: Simão Gomes Viana <devel@superboring.dev>
+---
+ init/main.c | 7 +++++--
+ 1 file changed, 5 insertions(+), 2 deletions(-)
+
+diff --git a/init/main.c b/init/main.c
+index 00fac1170294..666a06dba9cb 100644
+--- a/init/main.c
++++ b/init/main.c
+@@ -1217,10 +1217,13 @@ static __init_or_module void
+ trace_initcall_finish_cb(void *data, initcall_t fn, int ret)
+ {
+ 	ktime_t rettime, *calltime = data;
++	long long delta;
+ 
+ 	rettime = ktime_get();
+-	printk(KERN_DEBUG "initcall %pS returned %d after %lld usecs\n",
+-		 fn, ret, (unsigned long long)ktime_us_delta(rettime, *calltime));
++	delta = ktime_us_delta(rettime, *calltime);
++	if (ret || delta)
++		printk(KERN_DEBUG "initcall %pS returned %d after %lld usecs\n",
++			fn, ret, (unsigned long long)ktime_us_delta(rettime, *calltime));
+ }
+ 
+ static ktime_t initcall_calltime;
+-- 
+2.48.0

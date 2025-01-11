@@ -1,10 +1,17 @@
-cpuidle: Prefer teo over menu governor
+From 6d5071a14ca804a44272348c8e0934c9159fdb50 Mon Sep 17 00:00:00 2001
+From: Christian Loehle <christian.loehle@arm.com>
+Date: Thu, 5 Sep 2024 10:26:39 +0100
+Subject: [PATCH] cpuidle: Prefer teo over menu governor
 
 Since menu no longer has the interactivity boost teo works better
 overall, so make it the default.
 
 Signed-off-by: Christian Loehle <christian.loehle@arm.com>
-
+---
+ drivers/cpuidle/Kconfig          | 5 +----
+ drivers/cpuidle/governors/menu.c | 2 +-
+ drivers/cpuidle/governors/teo.c  | 2 +-
+ 3 files changed, 3 insertions(+), 6 deletions(-)
 
 diff --git a/drivers/cpuidle/Kconfig b/drivers/cpuidle/Kconfig
 index cac5997dca50..ae67a464025a 100644
@@ -55,3 +62,5 @@ index f2992f92d8db..6c3cc39f285d 100644
  	.enable =	teo_enable_device,
  	.select =	teo_select,
  	.reflect =	teo_reflect,
+-- 
+2.48.0

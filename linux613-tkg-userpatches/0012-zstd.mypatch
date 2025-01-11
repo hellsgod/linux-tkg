@@ -1,39 +1,71 @@
-zstd: import upstream v1.5.6
+From 7867acbb0a8943e952cd0fba9638739d54e4caa2 Mon Sep 17 00:00:00 2001
+From: Oleksandr Natalenko <oleksandr@natalenko.name>
+Date: Wed, 27 Mar 2024 08:51:17 +0100
+Subject: [PATCH 1/2] zstd: import upstream v1.5.6
 
 Signed-off-by: Oleksandr Natalenko <oleksandr@natalenko.name>
-
-
-lib: zstd: Refactor intentional wrap-around test
-
-In an effort to separate intentional arithmetic wrap-around from
-unexpected wrap-around, we need to refactor places that depend on this
-kind of math. One of the most common code patterns of this is:
-
-	VAR + value < VAR
-
-Notably, this is considered "undefined behavior" for signed and pointer
-types, which the kernel works around by using the -fno-strict-overflow
-option in the build[1] (which used to just be -fwrapv). Regardless, we
-want to get the kernel source to the position where we can meaningfully
-instrument arithmetic wrap-around conditions and catch them when they
-are unexpected, regardless of whether they are signed[2], unsigned[3],
-or pointer[4] types.
-
-Switch to a more regular type for a 64-bit value and refactor the
-open-coded wrap-around addition test to use subtraction from the type max
-(since add_would_overflow() may not be defined in early boot code). This
-paves the way to enabling the wrap-around sanitizers in the future.
-
-Link: https://git.kernel.org/linus/68df3755e383e6fecf2354a67b08f92f18536594 [1]
-Link: https://github.com/KSPP/linux/issues/26 [2]
-Link: https://github.com/KSPP/linux/issues/27 [3]
-Link: https://github.com/KSPP/linux/issues/344 [4]
-Cc: Nick Terrell <terrelln@fb.com>
-Cc: Paul Jones <paul@pauljones.id.au>
-Cc: Sedat Dilek <sedat.dilek@gmail.com>
-Cc: Oleksandr Natalenko <oleksandr@natalenko.name>
-Cc: Xin Gao <gaoxin@cdjrlc.com>
-Signed-off-by: Kees Cook <keescook@chromium.org>
+---
+ include/linux/zstd.h                          |    2 +-
+ include/linux/zstd_errors.h                   |   23 +-
+ include/linux/zstd_lib.h                      |  850 +++++--
+ lib/zstd/Makefile                             |    2 +-
+ lib/zstd/common/allocations.h                 |   56 +
+ lib/zstd/common/bits.h                        |  149 ++
+ lib/zstd/common/bitstream.h                   |  127 +-
+ lib/zstd/common/compiler.h                    |  134 +-
+ lib/zstd/common/cpu.h                         |    3 +-
+ lib/zstd/common/debug.c                       |    9 +-
+ lib/zstd/common/debug.h                       |   34 +-
+ lib/zstd/common/entropy_common.c              |   42 +-
+ lib/zstd/common/error_private.c               |   12 +-
+ lib/zstd/common/error_private.h               |   84 +-
+ lib/zstd/common/fse.h                         |   94 +-
+ lib/zstd/common/fse_decompress.c              |  130 +-
+ lib/zstd/common/huf.h                         |  237 +-
+ lib/zstd/common/mem.h                         |    3 +-
+ lib/zstd/common/portability_macros.h          |   28 +-
+ lib/zstd/common/zstd_common.c                 |   38 +-
+ lib/zstd/common/zstd_deps.h                   |   16 +-
+ lib/zstd/common/zstd_internal.h               |  109 +-
+ lib/zstd/compress/clevels.h                   |    3 +-
+ lib/zstd/compress/fse_compress.c              |   74 +-
+ lib/zstd/compress/hist.c                      |    3 +-
+ lib/zstd/compress/hist.h                      |    3 +-
+ lib/zstd/compress/huf_compress.c              |  441 ++--
+ lib/zstd/compress/zstd_compress.c             | 2111 ++++++++++++-----
+ lib/zstd/compress/zstd_compress_internal.h    |  359 ++-
+ lib/zstd/compress/zstd_compress_literals.c    |  155 +-
+ lib/zstd/compress/zstd_compress_literals.h    |   25 +-
+ lib/zstd/compress/zstd_compress_sequences.c   |    7 +-
+ lib/zstd/compress/zstd_compress_sequences.h   |    3 +-
+ lib/zstd/compress/zstd_compress_superblock.c  |  376 ++-
+ lib/zstd/compress/zstd_compress_superblock.h  |    3 +-
+ lib/zstd/compress/zstd_cwksp.h                |  169 +-
+ lib/zstd/compress/zstd_double_fast.c          |  143 +-
+ lib/zstd/compress/zstd_double_fast.h          |   17 +-
+ lib/zstd/compress/zstd_fast.c                 |  596 +++--
+ lib/zstd/compress/zstd_fast.h                 |    6 +-
+ lib/zstd/compress/zstd_lazy.c                 |  732 +++---
+ lib/zstd/compress/zstd_lazy.h                 |  138 +-
+ lib/zstd/compress/zstd_ldm.c                  |   21 +-
+ lib/zstd/compress/zstd_ldm.h                  |    3 +-
+ lib/zstd/compress/zstd_ldm_geartab.h          |    3 +-
+ lib/zstd/compress/zstd_opt.c                  |  497 ++--
+ lib/zstd/compress/zstd_opt.h                  |   41 +-
+ lib/zstd/decompress/huf_decompress.c          |  887 ++++---
+ lib/zstd/decompress/zstd_ddict.c              |    9 +-
+ lib/zstd/decompress/zstd_ddict.h              |    3 +-
+ lib/zstd/decompress/zstd_decompress.c         |  356 ++-
+ lib/zstd/decompress/zstd_decompress_block.c   |  708 +++---
+ lib/zstd/decompress/zstd_decompress_block.h   |   10 +-
+ .../decompress/zstd_decompress_internal.h     |    9 +-
+ lib/zstd/decompress_sources.h                 |    2 +-
+ lib/zstd/zstd_common_module.c                 |    5 +-
+ lib/zstd/zstd_compress_module.c               |    2 +-
+ lib/zstd/zstd_decompress_module.c             |    4 +-
+ 58 files changed, 6576 insertions(+), 3530 deletions(-)
+ create mode 100644 lib/zstd/common/allocations.h
+ create mode 100644 lib/zstd/common/bits.h
 
 diff --git a/include/linux/zstd.h b/include/linux/zstd.h
 index b2c7cf310c8f..ac59ae9a18d7 100644
@@ -16250,7 +16282,7 @@ index 8c1a79d666f8..de459a0dacd1 100644
   *
   * This source code is licensed under both the BSD-style license (found in the
 diff --git a/lib/zstd/decompress/zstd_decompress.c b/lib/zstd/decompress/zstd_decompress.c
-index 6b3177c94711..c9cbc45f6ed9 100644
+index 6b3177c94711..b2bfa2b16859 100644
 --- a/lib/zstd/decompress/zstd_decompress.c
 +++ b/lib/zstd/decompress/zstd_decompress.c
 @@ -1,5 +1,6 @@
@@ -16358,7 +16390,7 @@ index 6b3177c94711..c9cbc45f6ed9 100644
      if ( (format != ZSTD_f_zstd1_magicless)
        && (MEM_readLE32(src) != ZSTD_MAGICNUMBER) ) {
          if ((MEM_readLE32(src) & ZSTD_MAGIC_SKIPPABLE_MASK) == ZSTD_MAGIC_SKIPPABLE_START) {
-@@ -540,61 +570,62 @@ static size_t readSkippableFrameSize(void const* src, size_t srcSize)
+@@ -540,49 +570,52 @@ static size_t readSkippableFrameSize(void const* src, size_t srcSize)
      sizeU32 = MEM_readLE32((BYTE const*)src + ZSTD_FRAMEIDSIZE);
      RETURN_ERROR_IF((U32)(sizeU32 + ZSTD_SKIPPABLEHEADERSIZE) < sizeU32,
                      frameParameter_unsupported, "");
@@ -16432,11 +16464,8 @@ index 6b3177c94711..c9cbc45f6ed9 100644
 + * @return : decompressed size of the frames contained */
  unsigned long long ZSTD_findDecompressedSize(const void* src, size_t srcSize)
  {
--    unsigned long long totalDstSize = 0;
-+    U64 totalDstSize = 0;
- 
-     while (srcSize >= ZSTD_startingInputLength(ZSTD_f_zstd1)) {
-         U32 const magicNumber = MEM_readLE32(src);
+     unsigned long long totalDstSize = 0;
+@@ -592,9 +625,7 @@ unsigned long long ZSTD_findDecompressedSize(const void* src, size_t srcSize)
  
          if ((magicNumber & ZSTD_MAGIC_SKIPPABLE_MASK) == ZSTD_MAGIC_SKIPPABLE_START) {
              size_t const skippableSize = readSkippableFrameSize(src, srcSize);
@@ -16459,7 +16488,7 @@ index 6b3177c94711..c9cbc45f6ed9 100644
 -            /* check for overflow */
 -            if (totalDstSize + ret < totalDstSize) return ZSTD_CONTENTSIZE_ERROR;
 -            totalDstSize += ret;
-+            if (U64_MAX - totalDstSize < fcs)
++            if (totalDstSize + fcs < totalDstSize)
 +                return ZSTD_CONTENTSIZE_ERROR; /* check for overflow */
 +            totalDstSize += fcs;
          }
@@ -18614,3 +18643,70 @@ index 469fc3059be0..0ae819f0c927 100644
 +	return ZSTD_DCtx_reset(dstream, ZSTD_reset_session_only);
  }
  EXPORT_SYMBOL(zstd_reset_dstream);
+ 
+-- 
+2.48.0
+
+
+From 5d212fb5daf934e49b4db3c84afdb2fc0dd55a46 Mon Sep 17 00:00:00 2001
+From: Kees Cook <keescook@chromium.org>
+Date: Mon, 22 Jan 2024 16:27:56 -0800
+Subject: [PATCH 2/2] lib: zstd: Refactor intentional wrap-around test
+
+In an effort to separate intentional arithmetic wrap-around from
+unexpected wrap-around, we need to refactor places that depend on this
+kind of math. One of the most common code patterns of this is:
+
+	VAR + value < VAR
+
+Notably, this is considered "undefined behavior" for signed and pointer
+types, which the kernel works around by using the -fno-strict-overflow
+option in the build[1] (which used to just be -fwrapv). Regardless, we
+want to get the kernel source to the position where we can meaningfully
+instrument arithmetic wrap-around conditions and catch them when they
+are unexpected, regardless of whether they are signed[2], unsigned[3],
+or pointer[4] types.
+
+Switch to a more regular type for a 64-bit value and refactor the
+open-coded wrap-around addition test to use subtraction from the type max
+(since add_would_overflow() may not be defined in early boot code). This
+paves the way to enabling the wrap-around sanitizers in the future.
+
+Link: https://git.kernel.org/linus/68df3755e383e6fecf2354a67b08f92f18536594 [1]
+Link: https://github.com/KSPP/linux/issues/26 [2]
+Link: https://github.com/KSPP/linux/issues/27 [3]
+Link: https://github.com/KSPP/linux/issues/344 [4]
+Cc: Nick Terrell <terrelln@fb.com>
+Cc: Paul Jones <paul@pauljones.id.au>
+Cc: Sedat Dilek <sedat.dilek@gmail.com>
+Cc: Oleksandr Natalenko <oleksandr@natalenko.name>
+Cc: Xin Gao <gaoxin@cdjrlc.com>
+Signed-off-by: Kees Cook <keescook@chromium.org>
+---
+ lib/zstd/decompress/zstd_decompress.c | 4 ++--
+ 1 file changed, 2 insertions(+), 2 deletions(-)
+
+diff --git a/lib/zstd/decompress/zstd_decompress.c b/lib/zstd/decompress/zstd_decompress.c
+index b2bfa2b16859..c9cbc45f6ed9 100644
+--- a/lib/zstd/decompress/zstd_decompress.c
++++ b/lib/zstd/decompress/zstd_decompress.c
+@@ -618,7 +618,7 @@ size_t ZSTD_readSkippableFrame(void* dst, size_t dstCapacity,
+  * @return : decompressed size of the frames contained */
+ unsigned long long ZSTD_findDecompressedSize(const void* src, size_t srcSize)
+ {
+-    unsigned long long totalDstSize = 0;
++    U64 totalDstSize = 0;
+ 
+     while (srcSize >= ZSTD_startingInputLength(ZSTD_f_zstd1)) {
+         U32 const magicNumber = MEM_readLE32(src);
+@@ -636,7 +636,7 @@ unsigned long long ZSTD_findDecompressedSize(const void* src, size_t srcSize)
+         {   unsigned long long const fcs = ZSTD_getFrameContentSize(src, srcSize);
+             if (fcs >= ZSTD_CONTENTSIZE_ERROR) return fcs;
+ 
+-            if (totalDstSize + fcs < totalDstSize)
++            if (U64_MAX - totalDstSize < fcs)
+                 return ZSTD_CONTENTSIZE_ERROR; /* check for overflow */
+             totalDstSize += fcs;
+         }
+-- 
+2.48.0
