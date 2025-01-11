@@ -1,0 +1,31 @@
+diff --git a/Makefile b/Makefile
+index cbdc55659e19..a926d82e69da 100644
+--- a/Makefile
++++ b/Makefile
+@@ -464,7 +464,7 @@ HOSTPKG_CONFIG	= pkg-config
+ KBUILD_USERHOSTCFLAGS := -Wall -Wmissing-prototypes -Wstrict-prototypes \
+ 			 -O3 -fomit-frame-pointer -std=gnu11
+ KBUILD_USERCFLAGS  := $(KBUILD_USERHOSTCFLAGS) $(USERCFLAGS)
+-KBUILD_USERLDFLAGS := $(USERLDFLAGS)
++KBUILD_USERLDFLAGS := -Wl,--gc-sections $(USERLDFLAGS)
+ 
+ # These flags apply to all Rust code in the tree, including the kernel and
+ # host programs.
+@@ -552,7 +552,7 @@ LDFLAGS_MODULE  =
+ CFLAGS_KERNEL	=
+ RUSTFLAGS_KERNEL =
+ AFLAGS_KERNEL	=
+-LDFLAGS_vmlinux =
++LDFLAGS_vmlinux = -Wl,--gc-sections
+ 
+ # Use USERINCLUDE when you must reference the UAPI directories only.
+ USERINCLUDE    := \
+@@ -574,7 +574,7 @@ LINUXINCLUDE    := \
+ 
+ KBUILD_AFLAGS   := -D__ASSEMBLY__ -fno-PIE
+ 
+-KBUILD_CFLAGS :=
++KBUILD_CFLAGS := -fdata-sections -ffunction-sections -fopenmp -fvisibility=hidden -mllvm -enable-gvn-hoist -mllvm -inline-threshold=1500 -mllvm -unroll-threshold=50
+ KBUILD_CFLAGS += -std=gnu11
+ KBUILD_CFLAGS += -fshort-wchar
+ KBUILD_CFLAGS += -funsigned-char
