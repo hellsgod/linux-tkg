@@ -1,22 +1,29 @@
 diff --git a/Makefile b/Makefile
-index 87dc2f810860..becb57088ef3 100644
+index 87dc2f810860..8b9319d15e4f 100644
 --- a/Makefile
 +++ b/Makefile
-@@ -811,6 +811,26 @@ endif
+@@ -811,6 +811,33 @@ endif
  KBUILD_RUSTFLAGS += -Cdebug-assertions=$(if $(CONFIG_RUST_DEBUG_ASSERTIONS),y,n)
  KBUILD_RUSTFLAGS += -Coverflow-checks=$(if $(CONFIG_RUST_OVERFLOW_CHECKS),y,n)
  
 +ifdef CONFIG_POLLY_CLANG
 +KBUILD_CFLAGS	+= -fplugin=LLVMPolly.so \
 +		   -mllvm -polly \
++		   -mllvm -polly-position=early \
++		   -mllvm -polly-dependences-computeout=600000 \
++		   -mllvm -polly-detect-profitability-min-per-loop-insts=40 \
 +		   -mllvm -polly-ast-use-context \
 +		   -mllvm -polly-invariant-load-hoisting \
 +		   -mllvm -polly-loopfusion-greedy \
 +		   -mllvm -polly-run-inliner \
-+		   -mllvm -polly-tiling \
++		   -mllvm -polly-tiling=true \
 +		   -mllvm -polly-2nd-level-tiling \
++		   -mllvm -polly-prevect-width=256 \
 +		   -mllvm -polly-vectorizer=stripmine \
-+		   -mllvm -polly-parallel
++		   -mllvm -polly-parallel \
++		   -mllvm -polly-invariant-load-hoisting \
++		   -mllvm -polly-run-dce \
++		   -mllvm -polly-enable-delicm=true
 +# Polly may optimise loops with dead paths beyound what the linker
 +# can understand. This may negate the effect of the linker's DCE
 +# so we tell Polly to perfom proven DCE on the loops it optimises
