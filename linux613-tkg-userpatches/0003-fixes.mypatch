@@ -1,7 +1,7 @@
-From b9b69f5feface816b8c55d31c9ec1002b020edf8 Mon Sep 17 00:00:00 2001
+From 89b6e61e6a1d1a024f7a9134984a69c44591aa78 Mon Sep 17 00:00:00 2001
 From: Hamza Mahfooz <hamza.mahfooz@amd.com>
 Date: Wed, 1 Nov 2023 17:00:36 -0400
-Subject: [PATCH 1/6] drm/edid: add a quirk for two 240Hz Samsung monitors
+Subject: [PATCH 1/5] drm/edid: add a quirk for two 240Hz Samsung monitors
 
 Without this fix the 5120x1440@240 timing of these monitors
 leads to screen flickering.
@@ -112,10 +112,10 @@ index 855beafb76ff..ad78059ee954 100644
 2.48.0
 
 
-From b57cd2d2b3c9b539d03e75234b5d96f4140ba759 Mon Sep 17 00:00:00 2001
+From 155225b9a38bb839fca2e569e66ca3883866e4c5 Mon Sep 17 00:00:00 2001
 From: Peter Jung <admin@ptr1337.dev>
 Date: Sat, 2 Nov 2024 11:04:43 +0100
-Subject: [PATCH 2/6] kbuild: add resolve_btfids to pacman PKGBUILD
+Subject: [PATCH 2/5] kbuild: add resolve_btfids to pacman PKGBUILD
 
 If the config is using DEBUG_INFO_BTF, it is required to package resolve_btfids with.
 Compiling dkms modules will fail otherwise.
@@ -147,10 +147,10 @@ index dca706617adc..89d3aef160b7 100644
 2.48.0
 
 
-From ec2d308dbf38603573914983cfd43d6ea3f39195 Mon Sep 17 00:00:00 2001
+From 4e4e07e4501a5227fd5e65ace60c080955766906 Mon Sep 17 00:00:00 2001
 From: Mateusz Guzik <mjguzik@gmail.com>
 Date: Tue, 19 Nov 2024 15:35:26 +0100
-Subject: [PATCH 3/6] get_task_exe_file: check PF_KTHREAD locklessly
+Subject: [PATCH 3/5] get_task_exe_file: check PF_KTHREAD locklessly
 
 Same thing as 8ac5dc66599c ("get_task_mm: check PF_KTHREAD lockless")
 
@@ -192,10 +192,10 @@ index 9b301180fd41..19d7fe31869b 100644
 2.48.0
 
 
-From 96fc6671eecf38516c21c1672693d36cb97422aa Mon Sep 17 00:00:00 2001
+From 93c4d44251b2b8f992914f38f6f6380a34ddcb11 Mon Sep 17 00:00:00 2001
 From: =?UTF-8?q?Thomas=20Wei=C3=9Fschuh?= <thomas.weissschuh@linutronix.de>
 Date: Thu, 21 Nov 2024 08:38:08 +0100
-Subject: [PATCH 4/6] kprobes: Reduce preempt disable scope in
+Subject: [PATCH 4/5] kprobes: Reduce preempt disable scope in
  check_kprobe_access_safe()
 MIME-Version: 1.0
 Content-Type: text/plain; charset=UTF-8
@@ -306,45 +306,10 @@ index b027a4030976..5cc750200f19 100644
 2.48.0
 
 
-From 2f285231e14d608bae2bd25d0143ad350069abcd Mon Sep 17 00:00:00 2001
-From: hellsgod <hellsgod@gmx.ch>
-Date: Mon, 6 Jan 2025 20:24:27 +0100
-Subject: [PATCH 5/6] Revert "vmstat: disable vmstat_work on
- vmstat_cpu_down_prep()"
-
-This reverts commit adcfb264c3ed51fbbf5068ddf10d309a63683868.
----
- mm/vmstat.c | 3 +--
- 1 file changed, 1 insertion(+), 2 deletions(-)
-
-diff --git a/mm/vmstat.c b/mm/vmstat.c
-index 0889b75cef14..4d016314a56c 100644
---- a/mm/vmstat.c
-+++ b/mm/vmstat.c
-@@ -2148,14 +2148,13 @@ static int vmstat_cpu_online(unsigned int cpu)
- 	if (!node_state(cpu_to_node(cpu), N_CPU)) {
- 		node_set_state(cpu_to_node(cpu), N_CPU);
- 	}
--	enable_delayed_work(&per_cpu(vmstat_work, cpu));
- 
- 	return 0;
- }
- 
- static int vmstat_cpu_down_prep(unsigned int cpu)
- {
--	disable_delayed_work_sync(&per_cpu(vmstat_work, cpu));
-+	cancel_delayed_work_sync(&per_cpu(vmstat_work, cpu));
- 	return 0;
- }
- 
--- 
-2.48.0
-
-
-From 24553c9fd3b3dc97cd8754503ec9afc845db966f Mon Sep 17 00:00:00 2001
+From 9461c42d10a1848eea0b280e9e986a139246c689 Mon Sep 17 00:00:00 2001
 From: Chris Bainbridge <chris.bainbridge@gmail.com>
 Date: Sat, 11 Jan 2025 22:03:38 +0100
-Subject: [PATCH 6/6] ACPI: video: Fix random crashes due to bad kfree
+Subject: [PATCH 5/5] ACPI: video: Fix random crashes due to bad kfree
 
 Commit c6a837088bed ("drm/amd/display: Fetch the EDID from _DDC if
 available for eDP") added function dm_helpers_probe_acpi_edid, which
