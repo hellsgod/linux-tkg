@@ -25,7 +25,7 @@ index cbdc55659e19..5433958749e0 100644
  KBUILD_AFLAGS   := -D__ASSEMBLY__ -fno-PIE
  
 -KBUILD_CFLAGS :=
-+KBUILD_CFLAGS := -mllvm -enable-gvn-hoist -mllvm -inline-threshold=1500 -mllvm -unroll-threshold=50 -mllvm -vectorize-slp -mllvm -vectorize-loops -mllvm -enable-loop-distribute -fdata-sections -ffunction-sections -mllvm -enable-memcpy-dag-opt
++KBUILD_CFLAGS := -mllvm -enable-gvn-hoist -mllvm -inline-threshold=1500 -mllvm -unroll-threshold=50 -mllvm -vectorize-slp -mllvm -vectorize-loops -mllvm -enable-loop-distribute -fdata-sections -ffunction-sections -mllvm -enable-memcpy-dag-opt -mllvm -enable-pre -mllvm -enable-load-pre -mllvm -allow-unroll-and-jam -mllvm -enable-misched -mllvm -enable-gvn-memdep -mllvm -enable-loop-flatten
  KBUILD_CFLAGS += -std=gnu11
  KBUILD_CFLAGS += -fshort-wchar
  KBUILD_CFLAGS += -funsigned-char
