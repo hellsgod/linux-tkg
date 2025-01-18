@@ -1,6 +1,6 @@
 ## IMPORTANT READ BEFORE YOU CLONE AND BUILD!
 
-### This is a fork and customized for my machine and my liking! If you build this fork, you'll end up having a kernel optimized for zen4 with custom userpatches. Do not use this fork, if you don't know what you're doing!
+### This is a fork and customized for my machine and my liking! This is my personal project and it's not intended to be forked and built. That doesn't mean you can't, just don't expect me to fix issues you run into by doing it. I do not support LTS. I do not support kernel versions until EOL. As long as I am on kernel X, I'll update my patches. As soon as I change to a newer kernel, I drop support of the older one. If you build this fork anyway, you'll end up having a kernel optimized for zen4 with custom userpatches. Do not use this fork, if you don't know what you're doing and don't expect me to guide you how to optimize it for your machine.
 
 ## linux-tkg
 
