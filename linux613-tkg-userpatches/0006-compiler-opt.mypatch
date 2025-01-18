@@ -7,7 +7,7 @@ index cbdc55659e19..5433958749e0 100644
  			 -O3 -fomit-frame-pointer -std=gnu11
  KBUILD_USERCFLAGS  := $(KBUILD_USERHOSTCFLAGS) $(USERCFLAGS)
 -KBUILD_USERLDFLAGS := $(USERLDFLAGS)
-+KBUILD_USERLDFLAGS := -Wl,--gc-sections -Wl,--no-undefined -Wl,--as-needed -Wl,-z,common -Wl,-O2 -Wl,--icf=safe -Wl,-z,now -Wl,--relax -Wl,--sort-common -Wl,--sort-section=name $(USERLDFLAGS)
++KBUILD_USERLDFLAGS := -Wl,--gc-sections -Wl,--no-undefined -Wl,--as-needed -Wl,-z,common -Wl,-O2 -Wl,--icf=safe -Wl,-z,now -Wl,--relax $(USERLDFLAGS)
  
  # These flags apply to all Rust code in the tree, including the kernel and
  # host programs.
@@ -16,7 +16,7 @@ index cbdc55659e19..5433958749e0 100644
  RUSTFLAGS_KERNEL =
  AFLAGS_KERNEL	=
 -LDFLAGS_vmlinux =
-+LDFLAGS_vmlinux = -Wl,--gc-sections -Wl,--no-undefined -Wl,--as-needed -Wl,-z,common -Wl,-O2 -Wl,--icf=safe -Wl,-z,now -Wl,--relax -Wl,--sort-common -Wl,--sort-section=name
++LDFLAGS_vmlinux = -Wl,--gc-sections -Wl,--no-undefined -Wl,--as-needed -Wl,-z,common -Wl,-O2 -Wl,--icf=safe -Wl,-z,now -Wl,--relax
  
  # Use USERINCLUDE when you must reference the UAPI directories only.
  USERINCLUDE    := \
