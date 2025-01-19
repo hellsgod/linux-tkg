@@ -25,7 +25,7 @@ index cbdc55659e19..5433958749e0 100644
  KBUILD_AFLAGS   := -D__ASSEMBLY__ -fno-PIE
  
 -KBUILD_CFLAGS :=
-+KBUILD_CFLAGS := -mllvm -enable-gvn-hoist -mllvm -inline-threshold=1500 -mllvm -unroll-threshold=50 -mllvm -vectorize-slp -mllvm -vectorize-loops -mllvm -enable-loop-distribute -fdata-sections -ffunction-sections -mllvm -enable-memcpy-dag-opt -mllvm -enable-pre -mllvm -enable-load-pre -mllvm -allow-unroll-and-jam -mllvm -enable-misched -mllvm -enable-gvn-memdep -mllvm -enable-loop-flatten -mllvm -slp-vectorize-hor-store -mllvm -enable-aa-sched-mi -mllvm -enable-merge-functions -mllvm -simplifycfg-sink-common -mllvm -unswitch-threshold=50 -mllvm -enable-nontrivial-unswitch -mllvm -hot-cold-static-analysis -mllvm -max-speculation-depth=10
++KBUILD_CFLAGS := -mllvm -enable-gvn-hoist -mllvm -inline-threshold=1500 -mllvm -unroll-threshold=50 -mllvm -vectorize-slp -mllvm -vectorize-loops -mllvm -enable-loop-distribute -fdata-sections -ffunction-sections -mllvm -enable-memcpy-dag-opt -mllvm -enable-pre -mllvm -enable-load-pre -mllvm -allow-unroll-and-jam -mllvm -enable-misched -mllvm -enable-gvn-memdep -mllvm -enable-loop-flatten -mllvm -slp-vectorize-hor-store -mllvm -enable-aa-sched-mi -mllvm -enable-merge-functions -mllvm -simplifycfg-sink-common -mllvm -unswitch-threshold=50 -mllvm -enable-nontrivial-unswitch -mllvm -hot-cold-static-analysis -mllvm -max-speculation-depth=10 -mllvm -enable-partial-inlining -mllvm -inlinehint-threshold=250 -mllvm -inlinecold-threshold=275
  KBUILD_CFLAGS += -std=gnu11
  KBUILD_CFLAGS += -fshort-wchar
  KBUILD_CFLAGS += -funsigned-char
