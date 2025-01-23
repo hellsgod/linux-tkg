@@ -1,5 +1,112 @@
+From 1762e828114eb4b5c6679d0300df4779e028a639 Mon Sep 17 00:00:00 2001
+From: hellsgod <hellsgod@gmx.ch>
+Date: Thu, 23 Jan 2025 17:30:33 +0100
+Subject: [PATCH] Makefile: Optimization V1
+
+Code inlining and functional optimization
+Goal: Faster access to frequently used functions, reduction of function calls.
+Build flags:
+-mllvm -inline-threshold=1000
+-mllvm -enable-partial-inlining
+-mllvm -inlinehint-threshold=150
+-mllvm -inlinecold-threshold=200
+
+Loop optimizations
+Goal: Efficient loop unfolding and memory access optimization
+Build flags:
+-mllvm -unroll-threshold=50
+-mllvm -allow-unroll-and-jam
+-mllvm -enable-loop-distribute
+-mllvm -enable-loop-flatten
+-mllvm -unroll-max-count=8
+
+Vectorization (SLP and loops)
+Goal: Optimizing SIMD instructions for parallel computations
+Build flags:
+-mllvm -vectorize-slp
+-mllvm -vectorize-loops
+-mllvm -slp-vectorize-hor
+-mllvm -slp-vectorize-hor-store
+-mllvm -slp-threshold=8
+
+Memory access optimization
+Goal: More efficient use of prefetching and storage operations
+Build flags:
+-mllvm -enable-interleaved-mem-accesses
+-mllvm -enable-masked-interleaved-mem-accesses
+-mllvm -prefetch-distance=16
+-mllvm -memdep-block-scan-limit=32
+
+General code optimizations and efficiency
+Goal: Reduction of redundancies and simplification of control flow
+Build flags:
+-mllvm -enable-gvn-hoist
+-mllvm -enable-gvn-memdep
+-mllvm -enable-memcpy-dag-opt
+-mllvm -enable-pre
+-mllvm -enable-load-pre
+-mllvm -enable-misched
+-mllvm -adce-remove-loops
+-mllvm -simplifycfg-sink-common
+-mllvm -simplifycfg-merge-cond-stores
+-mllvm -simplifycfg-hoist-common
+-mllvm -mergefunc-preserve-debug-info
+-mllvm -mergefunc-use-aliases
+-mllvm -attributor-max-iterations=3
+
+Control flow and hot/cold optimization
+Goal: Better cache locality and prioritized processing of common code paths
+Build flags:
+-mllvm -hot-cold-static-analysis
+-mllvm -branch-hint-probability-threshold=75
+-mllvm -unswitch-threshold=50
+-mllvm -enable-nontrivial-unswitch
+
+Linker optimizations
+Goal: Reduction of binary size, improvement of read and load speed
+Linker flags:
+-Wl,--gc-sections
+-Wl,--no-undefined
+-Wl,--as-needed
+-Wl,-z,common
+-Wl,-O3
+-Wl,--icf=safe
+-Wl,-z,now
+-Wl,--relax
+-Wl,--relro
+-Wl,--emit-relocs
+-Wl,--compress-debug-sections=zstd
+-Wl,--exclude-libs,ALL
+-Wl,--strip-debug
+
+Debug information and size
+Goal: Efficient handling of debug information without compromising debugging functionality
+Build flags:
+-fdata-sections
+-ffunction-sections
+-mllvm -mergefunc-preserve-debug-info
+Linker-Flags:
+-Wl,--compress-debug-sections=zstd
+-Wl,--strip-debug
+
+Prefetching and cache optimizations
+Goal: Improved memory access and more efficient caching
+Build flags:
+-mllvm -prefetch-distance=16
+-mllvm -enable-interleaved-mem-accesses
+-mllvm -enable-masked-interleaved-mem-accesses
+
+Additional optimizations
+Goal: General improvement in performance and efficiency
+Build flags:
+-mllvm -interleave-loops
+-mllvm -x86-pad-for-align
+---
+ Makefile | 6 +++---
+ 1 file changed, 3 insertions(+), 3 deletions(-)
+
 diff --git a/Makefile b/Makefile
-index cbdc55659e19..5433958749e0 100644
+index a871b6036aec..45d8524e0984 100644
 --- a/Makefile
 +++ b/Makefile
 @@ -464,7 +464,7 @@ HOSTPKG_CONFIG	= pkg-config
@@ -29,3 +136,5 @@ index cbdc55659e19..5433958749e0 100644
  KBUILD_CFLAGS += -std=gnu11
  KBUILD_CFLAGS += -fshort-wchar
  KBUILD_CFLAGS += -funsigned-char
+-- 
+2.48.1
