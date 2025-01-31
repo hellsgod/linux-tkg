@@ -425,7 +425,7 @@ _set_compiler(){
         _lto_mode="${_lto_mode_array[$_selected_index]}"
       fi
       if [ "$_lto_mode" != "no" ]; then
-        llvm_opt="LLVM=1 LLVM_IAS=1"
+        llvm_opt="CC=/home/hellsgod/clang20/bin/clang LD=/home/hellsgod/clang20/bin/ld.lld LLVM=1 LLVM_IAS=1"
       fi
     elif [[ -n "$_lto_mode" && "$_lto_mode" != "no" ]]; then
       warning "Clang LTO is only available on linux 5.12 onwards."
