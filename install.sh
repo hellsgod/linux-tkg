@@ -78,13 +78,13 @@ _install_dependencies() {
   fi
   if [ "$_distro" = "Debian" -o "$_distro" = "Ubuntu" ]; then
     msg2 "Installing dependencies"
-    sudo apt install bc bison build-essential ccache cpio fakeroot flex git kmod libelf-dev libncurses5-dev libssl-dev lz4 qtbase5-dev rsync schedtool wget zstd debhelper ${clang_deps} -y
+    sudo apt install bc bison build-essential ccache cpio fakeroot flex git kmod libdw-dev libelf-dev libncurses-dev libssl-dev lz4 qtbase5-dev rsync schedtool wget zstd debhelper ${clang_deps} -y
   elif [ "$_distro" = "Fedora" ]; then
     msg2 "Installing dependencies"
     sudo dnf install openssl-devel-engine hostname perl bison ccache dwarves elfutils-devel elfutils-libelf-devel fedora-packager fedpkg flex gcc-c++ git libXi-devel lz4 make ncurses-devel openssl openssl-devel perl-devel perl-generators pesign python3-devel qt5-qtbase-devel rpm-build rpmdevtools schedtool zstd bc rsync -y ${clang_deps} -y
   elif [ "$_distro" = "Suse" ]; then
     msg2 "Installing dependencies"
-    sudo zypper install -y hostname bc bison ccache dwarves elfutils flex gcc-c++ git libXi-devel libelf-devel libqt5-qtbase-common-devel libqt5-qtbase-devel lz4 make ncurses-devel openssl-devel patch pesign rpm-build rpmdevtools schedtool python3 rsync zstd ${clang_deps}
+    sudo zypper install -y hostname bc bison ccache dwarves elfutils flex gcc-c++ git libXi-devel libelf-devel libqt5-qtbase-common-devel libqt5-qtbase-devel lz4 make ncurses-devel openssl-devel patch pesign rpm-build rpmdevtools schedtool python3 rsync zstd libdw-devel ${clang_deps}
   fi
 }
 
@@ -196,6 +196,9 @@ if [ "$1" = "install" ]; then
   msg2 "Add patched files to the diff.patch"
   git add .
 
+  export KCPPFLAGS
+  export KCFLAGS
+
   if [[ "$_distro" =~ ^(Ubuntu|Debian)$ ]]; then
 
     msg2 "Building kernel DEB packages"
@@ -290,8 +293,6 @@ if [ "$1" = "install" ]; then
         # It seems there is some weird behavior with relocking existing locks, so let's unlock first
         sudo zypper removelock kernel-default-devel kernel-default kernel-devel kernel-syms
 
-        msg2 "Some files from 'linux-glibc-devel' will be replaced by files from the custom kernel-hearders package"
-        msg2 "To revert back to the original kernel headers do 'sudo zypper install -f linux-glibc-devel'"
         sudo zypper install --oldpackage --allow-unsigned-rpm $_kernel_rpm $_kernel_devel_rpm $_kernel_syms_rpm
 
         # Let's lock post install
@@ -368,8 +369,6 @@ if [ "$1" = "install" ]; then
     echo "    # copy the patched and compiled sources to /usr/src/$_headers_folder_name"
     echo "    sudo make modules_install"
     echo "    sudo make install"
-    echo "    sudo dracut --force --hostonly ${_dracut_options} --kver $_kernelname"
-    echo "    sudo grub-mkconfig -o /boot/grub/grub.cfg"
 
     msg2 "Note: Uninstalling requires manual intervention, use './install.sh uninstall-help' for more information."
     read -p "Continue ? Y/[n]: " _continue
@@ -388,17 +387,20 @@ if [ "$1" = "install" ]; then
     cd "/usr/src/$_headers_folder_name"
 
     msg2 "Installing modules"
-    if [ "$_STRIP" = "true" ]; then
-      sudo make modules_install INSTALL_MOD_STRIP="1"
-    else
-      sudo make modules_install
-    fi
+
+    _STRIP_MODS=""
+    [[ "$_STRIP" == "true" ]] && _STRIP_MODS="INSTALL_MOD_STRIP=1"
+
+    sudo make modules_install $_STRIP_MODS
+
     msg2 "Removing modules from source folder in /usr/src/${_kernel_src_gentoo}"
     sudo find . -type f -name '*.ko' -delete
     sudo find . -type f -name '*.ko.cmd' -delete
 
     msg2 "Installing kernel"
     sudo make install
+
+    sudo cp "$(make ${llvm_opt} -s image_name)" "/lib/modules/$_kernelname/vmlinuz"
 
     if [ "$_distro" = "Gentoo" ]; then
 
@@ -415,14 +417,6 @@ if [ "$1" = "install" ]; then
       if [[ "$_continue" =~ ^(Y|y|Yes|yes)$ ]];then
         sudo emerge @module-rebuild --keep-going
       fi
-
-    else
-
-      msg2 "Creating initramfs"
-      sudo dracut --force --hostonly ${_dracut_options} --kver $_kernelname
-      msg2 "Updating GRUB"
-      sudo grub-mkconfig -o /boot/grub/grub.cfg
-
     fi
 
   fi
