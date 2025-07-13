@@ -171,12 +171,12 @@ if [ "$1" = "install" ]; then
 
   if [ -z "$_kernel_localversion" ]; then
     if [ "$_preempt_rt" = "1" ]; then
-      _kernel_flavor="tkg-${_cpusched}-rt${_compiler_name}"
+      _kernel_flavor="hc-${_cpusched}-rt${_compiler_name}"
     else
-      _kernel_flavor="tkg-${_cpusched}${_compiler_name}"
+      _kernel_flavor="hc-${_cpusched}${_compiler_name}"
     fi
   else
-    _kernel_flavor="tkg-${_kernel_localversion}"
+    _kernel_flavor="hc-${_kernel_localversion}"
   fi
 
   # Setup kernel_subver variable
@@ -431,12 +431,12 @@ if [ "$1" = "uninstall-help" ]; then
   cd "$_where"
 
   if [[ "$_distro" =~ ^(Ubuntu|Debian)$ ]]; then
-    msg2 "List of installed custom tkg kernels: "
-    dpkg -l "*tkg*" | grep "linux.*tkg"
-    dpkg -l "*linux-libc-dev*" | grep "linux.*tkg"
+    msg2 "List of installed custom hc kernels: "
+    dpkg -l "*hc*" | grep "linux.*hc"
+    dpkg -l "*linux-libc-dev*" | grep "linux.*hc"
     msg2 "To uninstall a version, you should remove the linux-image, linux-headers and linux-libc-dev associated to it (if installed), with: "
     msg2 "      sudo apt remove linux-image-VERSION linux-headers-VERSION linux-libc-dev-VERSION"
-    msg2 "       where VERSION is displayed in the lists above, uninstall only versions that have \"tkg\" in its name"
+    msg2 "       where VERSION is displayed in the lists above, uninstall only versions that have \"hc\" in its name"
     msg2 "Note: linux-libc-dev packages are no longer created and installed, you can safely remove any remnants."
   elif [ "$_distro" = "Fedora" ]; then
     msg2 "List of installed custom tkg kernels: "
