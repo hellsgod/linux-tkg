@@ -1,0 +1,180 @@
+From bd1db83c2aed7623cb0b80c85e864233ec743d10 Mon Sep 17 00:00:00 2001
+From: hellsgod <hellsgod@gmx.ch>
+Date: Sat, 12 Jul 2025 12:45:21 +0200
+Subject: [PATCH] Makefile: Rework my Optimizations and tune for older intel
+
+---
+ Makefile     | 118 ++++++++++++++++++++++++++++++++++++++++++++++++---
+ init/Kconfig |   4 +-
+ 2 files changed, 114 insertions(+), 8 deletions(-)
+
+diff --git a/Makefile b/Makefile
+index c91afd55099ea..42dae245811b2 100644
+--- a/Makefile
++++ b/Makefile
+@@ -459,9 +459,72 @@ HOSTRUSTC = rustc
+ HOSTPKG_CONFIG	= pkg-config
+ 
+ KBUILD_USERHOSTCFLAGS := -Wall -Wmissing-prototypes -Wstrict-prototypes \
+-			 -O2 -fomit-frame-pointer -std=gnu11
++			 -O3 -fomit-frame-pointer -std=gnu11
+ KBUILD_USERCFLAGS  := $(KBUILD_USERHOSTCFLAGS) $(USERCFLAGS)
+-KBUILD_USERLDFLAGS := $(USERLDFLAGS)
++KBUILD_USERLDFLAGS := \
++  -lto-CGO3 -lto-O3 -Wl,-O3 \
++  -Wl,--gc-sections -Wl,--no-undefined -Wl,--as-needed \
++  -Wl,-z,now -Wl,--relro -Wl,--relax \
++  -Wl,--icf=safe -Wl,--emit-relocs \
++  -Wl,--compress-debug-sections=zstd \
++  -Wl,--exclude-libs,ALL -Wl,--strip-debug \
++  -plugin-opt=hoist-common-insts \
++  -plugin-opt=interleave-loops \
++  -plugin-opt=enable-load-in-loop-pre \
++  -plugin-opt=enable-loop-simplifycfg-term-folding \
++  -plugin-opt=enable-split-backedge-in-load-pre \
++  -plugin-opt=enable-memcpy-dag-opt \
++  -plugin-opt=enable-gvn-sink \
++  -plugin-opt=enable-newgvn \
++  -plugin-opt=enable-spill-copy-elim \
++  -plugin-opt=instcombine-code-sinking \
++  -plugin-opt=enable-interleaved-mem-accesses \
++  -plugin-opt=enable-masked-interleaved-mem-accesses \
++  -plugin-opt=sink-insts-to-avoid-spills \
++  -plugin-opt=sink-freq-percent-threshold=50 \
++  -plugin-opt=enable-epilogue-vectorization \
++  -plugin-opt=enable-early-exit-vectorization \
++  -plugin-opt=enable-dse-initializes-attr-improvement \
++  -plugin-opt=enable-dse-partial-store-merging \
++  -plugin-opt=adce-remove-loops \
++  -plugin-opt=early-live-intervals \
++  -plugin-opt=enable-post-misched \
++  -plugin-opt=misched-cluster \
++  -plugin-opt=misched-cyclicpath \
++  -plugin-opt=misched-dcpl \
++  -plugin-opt=misched-fusion \
++  -plugin-opt=misched-regpressure \
++  -plugin-opt=max-sched-reorder=24 \
++  -plugin-opt=thinlto-assume-merged \
++  -plugin-opt=inline-threshold=225 \
++  -plugin-opt=inlinehint-threshold=125 \
++  -plugin-opt=inlinecold-threshold=50 \
++  -plugin-opt=max-num-inline-blocks=12 \
++  -plugin-opt=max-partial-inlining=6 \
++  -plugin-opt=inline-deferral \
++  -plugin-opt=inline-savings-multiplier=2 \
++  -plugin-opt=unroll-threshold=32 \
++  -plugin-opt=unroll-max-count=4 \
++  -plugin-opt=unroll-max-iteration-count-to-analyze=16 \
++  -plugin-opt=unroll-allow-partial \
++  -plugin-opt=unroll-partial-threshold=100 \
++  -plugin-opt=enable-loop-flatten \
++  -plugin-opt=slp-threshold=8 \
++  -plugin-opt=slp-schedule-budget=32 \
++  -plugin-opt=slp-split-alternate-instructions \
++  -plugin-opt=extra-vectorizer-passes \
++  -plugin-opt=hot-cold-static-analysis \
++  -plugin-opt=basic-block-sections=labels \
++  -plugin-opt=unique-basic-block-section-names \
++  -plugin-opt=hot-cold-split=true \
++  -plugin-opt=optimize-existing-hot-cold-new \
++  -plugin-opt=branch-hint-probability-threshold=75 \
++  -plugin-opt=enable-branch-hint \
++  -plugin-opt=hints-allow-reordering \
++  -plugin-opt=mergefunc-preserve-debug-info \
++  -plugin-opt=pick-merged-source-locations \
++  -plugin-opt=enable-merge-functions \
++  -plugin-opt=dfa-early-exit-heuristic $(USERLDFLAGS)
+ 
+ # These flags apply to all Rust code in the tree, including the kernel and
+ # host programs.
+@@ -488,7 +551,7 @@ export rust_common_flags := --edition=2021 \
+ 
+ KBUILD_HOSTCFLAGS   := $(KBUILD_USERHOSTCFLAGS) $(HOST_LFS_CFLAGS) \
+ 		       $(HOSTCFLAGS) -I $(srctree)/scripts/include
+-KBUILD_HOSTCXXFLAGS := -Wall -O2 $(HOST_LFS_CFLAGS) $(HOSTCXXFLAGS) \
++KBUILD_HOSTCXXFLAGS := -Wall -O3 $(HOST_LFS_CFLAGS) $(HOSTCXXFLAGS) \
+ 		       -I $(srctree)/scripts/include
+ KBUILD_HOSTRUSTFLAGS := $(rust_common_flags) -O -Cstrip=debuginfo \
+ 			-Zallow-features= $(HOSTRUSTFLAGS)
+@@ -572,7 +635,50 @@ LINUXINCLUDE    := \
+ 
+ KBUILD_AFLAGS   := -D__ASSEMBLY__ -fno-PIE
+ 
+-KBUILD_CFLAGS :=
++KBUILD_CFLAGS := \
++  -fdata-sections -ffunction-sections \
++  -ffine-grained-bitfield-accesses \
++  -fmerge-all-constants \
++  -Xclang -fmerge-functions \
++  -mllvm -enable-pre \
++  -mllvm -enable-load-pre \
++  -mllvm -enable-gvn-memdep \
++  -mllvm -enable-gvn-memoryssa \
++  -mllvm -dse-optimize-memoryssa \
++  -mllvm -enable-dse-partial-overwrite-tracking \
++  -mllvm -enable-dse-partial-store-merging \
++  -mllvm -vectorize-loops \
++  -mllvm -vectorize-slp \
++  -mllvm -slp-vectorize-hor \
++  -mllvm -slp-vectorize-hor-store \
++  -mllvm -loop-rotate-multi \
++  -mllvm -enable-loop-distribute \
++  -mllvm -allow-unroll-and-jam \
++  -mllvm -simplifycfg-merge-cond-stores \
++  -mllvm -simplifycfg-hoist-common \
++  -mllvm -simplifycfg-hoist-cond-stores \
++  -mllvm -simplifycfg-hoist-loads-with-cond-faulting \
++  -mllvm -simplifycfg-hoist-stores-with-cond-faulting \
++  -mllvm -simplifycfg-sink-common \
++  -mllvm -simplifycfg-merge-compatible-invokes \
++  -mllvm -branch-fold-placement \
++  -mllvm -forward-switch-cond \
++  -mllvm -enable-dfa-jump-thread \
++  -mllvm -enable-aa-sched-mi \
++  -mllvm -enable-constraint-elimination \
++  -mllvm -basic-aa-recphi \
++  -mllvm -basic-aa-separate-storage \
++  -mllvm -mergefunc-use-aliases \
++  -mllvm -aggressive-ext-opt \
++  -mllvm -aggressive-instcombine-max-scan-instrs=150 \
++  -mllvm -enable-partial-inlining \
++  -mllvm -enable-misched \
++  -mllvm -attributor-max-iterations=2 \
++  -mllvm -unswitch-threshold=30 \
++  -mllvm -max-speculation-depth=6 \
++  -mllvm -enable-nontrivial-unswitch \
++  -mllvm -hoist-const-loads \
++  -mllvm -hoist-const-stores
+ KBUILD_CFLAGS += -std=gnu11
+ KBUILD_CFLAGS += -fshort-wchar
+ KBUILD_CFLAGS += -funsigned-char
+@@ -856,8 +962,8 @@ endif # need-config
+ KBUILD_CFLAGS	+= -fno-delete-null-pointer-checks
+ 
+ ifdef CONFIG_CC_OPTIMIZE_FOR_PERFORMANCE
+-KBUILD_CFLAGS += -O2
+-KBUILD_RUSTFLAGS += -Copt-level=2
++KBUILD_CFLAGS += -O3
++KBUILD_RUSTFLAGS += -Copt-level=3
+ else ifdef CONFIG_CC_OPTIMIZE_FOR_SIZE
+ KBUILD_CFLAGS += -Os
+ KBUILD_RUSTFLAGS += -Copt-level=s
+diff --git a/init/Kconfig b/init/Kconfig
+index dd2ea3b9a7992..91428f88c7d30 100644
+--- a/init/Kconfig
++++ b/init/Kconfig
+@@ -1475,10 +1475,10 @@ choice
+ 	default CC_OPTIMIZE_FOR_PERFORMANCE
+ 
+ config CC_OPTIMIZE_FOR_PERFORMANCE
+-	bool "Optimize for performance (-O2)"
++	bool "Optimize for performance (-O3)"
+ 	help
+ 	  This is the default optimization level for the kernel, building
+-	  with the "-O2" compiler flag for best performance and most
++	  with the "-O3" compiler flag for best performance and most
+ 	  helpful compile-time warnings.
+ 
+ config CC_OPTIMIZE_FOR_SIZE
+-- 
+2.50.1
