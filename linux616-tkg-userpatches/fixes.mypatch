@@ -1,7 +1,42 @@
-From eef020f91e80d364d529c3339d234dc109f86f8a Mon Sep 17 00:00:00 2001
+From 8e2058b991cd039834db3ce2d50e6b967dc25bf5 Mon Sep 17 00:00:00 2001
+From: Peter Jung <admin@ptr1337.dev>
+Date: Sat, 2 Nov 2024 11:04:43 +0100
+Subject: [PATCH 1/3] kbuild: add resolve_btfids to pacman PKGBUILD
+
+If the config is using DEBUG_INFO_BTF, it is required to package resolve_btfids with.
+Compiling dkms modules will fail otherwise.
+
+Add a check, if resolve_btfids is present and then package if required.
+
+Signed-off-by: Peter Jung <admin@ptr1337.dev>
+---
+ scripts/package/PKGBUILD | 5 +++++
+ 1 file changed, 5 insertions(+)
+
+diff --git a/scripts/package/PKGBUILD b/scripts/package/PKGBUILD
+index 452374d63c24..08f80d7c5df0 100644
+--- a/scripts/package/PKGBUILD
++++ b/scripts/package/PKGBUILD
+@@ -90,6 +90,11 @@ _package-headers() {
+ 		"${srctree}/scripts/package/install-extmod-build" "${builddir}"
+ 	fi
+ 
++	# required when DEBUG_INFO_BTF_MODULES is enabled
++	if [ -f tools/bpf/resolve_btfids/resolve_btfids ]; then
++		install -Dt "$builddir/tools/bpf/resolve_btfids" tools/bpf/resolve_btfids/resolve_btfids
++	fi
++
+ 	echo "Installing System.map and config..."
+ 	mkdir -p "${builddir}"
+ 	cp System.map "${builddir}/System.map"
+-- 
+2.50.1
+
+
+From 3109a7a39230b0f93cf54cf473a451d70ed84f9a Mon Sep 17 00:00:00 2001
 From: En-Wei Wu <en-wei.wu@canonical.com>
 Date: Wed, 15 Jan 2025 11:50:14 +0800
-Subject: [PATCH 2/4] Bluetooth: btusb: Add new VID/PID 0489/e14e for MT7925
+Subject: [PATCH 2/3] Bluetooth: btusb: Add new VID/PID 0489/e14e for MT7925
 
 Add VID 0489 & PID e14e for MediaTek MT7925 USB Bluetooth chip.
 
@@ -54,7 +89,7 @@ Signed-off-by: En-Wei Wu <en-wei.wu@canonical.com>
  1 file changed, 2 insertions(+)
 
 diff --git a/drivers/bluetooth/btusb.c b/drivers/bluetooth/btusb.c
-index 9ab661d2d1e69..ff4e11a34c515 100644
+index f9eeec0aed57..6b12b44f3a0d 100644
 --- a/drivers/bluetooth/btusb.c
 +++ b/drivers/bluetooth/btusb.c
 @@ -705,6 +705,8 @@ static const struct usb_device_id quirks_table[] = {
@@ -67,45 +102,84 @@ index 9ab661d2d1e69..ff4e11a34c515 100644
  						     BTUSB_WIDEBAND_SPEECH },
  	{ USB_DEVICE(0x0489, 0xe150), .driver_info = BTUSB_MEDIATEK |
 -- 
-2.50.0
+2.50.1
 
 
-From 7899c00377736e9d6b52621fe7372dbedc3c9d06 Mon Sep 17 00:00:00 2001
-From: Melissa Wen <mwen@igalia.com>
-Date: Sun, 11 May 2025 18:22:41 -0300
-Subject: [PATCH 3/4] drm/amd/display: disable CRTC degamma LUT for DCN401
+From 3aa51509a0e81c26801464b2c4eb0a766784b667 Mon Sep 17 00:00:00 2001
+From: Uros Bizjak <ubizjak@gmail.com>
+Date: Wed, 9 Jul 2025 15:19:03 +0200
+Subject: [PATCH 3/3] workqueue: Use atomic_try_cmpxchg_relaxed() in
+ tryinc_node_nr_active()
 
-In DCN401 pre-blending degamma LUT isn't affecting cursor as in previous
-DCN version. As this is not the behavior close to what is expected for
-CRTC degamma LUT, disable CRTC degamma LUT property in this HW.
+Use try_cmpxchg() family of locking primitives instead of
+cmpxchg(*ptr, old, new) == old.
 
-Link: https://gitlab.freedesktop.org/drm/amd/-/issues/4176
-Signed-off-by: Melissa Wen <mwen@igalia.com>
+The x86 CMPXCHG instruction returns success in the ZF flag, so this
+change saves a compare after CMPXCHG (and related move instruction
+in front of CMPXCHG).
+
+Also, try_cmpxchg() implicitly assigns old *ptr value to "old" when
+CMPXCHG fails. There is no need to re-read the value in the loop.
+
+The generated assembly improves from:
+
+     3f7:	44 8b 0a             	mov    (%rdx),%r9d
+     3fa:	eb 12                	jmp    40e <...>
+     3fc:	8d 79 01             	lea    0x1(%rcx),%edi
+     3ff:	89 c8                	mov    %ecx,%eax
+     401:	f0 0f b1 7a 04       	lock cmpxchg %edi,0x4(%rdx)
+     406:	39 c1                	cmp    %eax,%ecx
+     408:	0f 84 83 00 00 00    	je     491 <...>
+     40e:	8b 4a 04             	mov    0x4(%rdx),%ecx
+     411:	41 39 c9             	cmp    %ecx,%r9d
+     414:	7f e6                	jg     3fc <...>
+
+to:
+
+    256b:	45 8b 08             	mov    (%r8),%r9d
+    256e:	41 8b 40 04          	mov    0x4(%r8),%eax
+    2572:	41 39 c1             	cmp    %eax,%r9d
+    2575:	7e 10                	jle    2587 <...>
+    2577:	8d 78 01             	lea    0x1(%rax),%edi
+    257a:	f0 41 0f b1 78 04    	lock cmpxchg %edi,0x4(%r8)
+    2580:	75 f0                	jne    2572 <...>
+
+No functional change intended.
+
+Signed-off-by: Uros Bizjak <ubizjak@gmail.com>
+Cc: Tejun Heo <tj@kernel.org>
+Cc: Lai Jiangshan <jiangshanlai@gmail.com>
 ---
- .../gpu/drm/amd/display/amdgpu_dm/amdgpu_dm_crtc.c    | 11 ++++++++++-
- 1 file changed, 10 insertions(+), 1 deletion(-)
+ kernel/workqueue.c | 13 +++++--------
+ 1 file changed, 5 insertions(+), 8 deletions(-)
 
-diff --git a/drivers/gpu/drm/amd/display/amdgpu_dm/amdgpu_dm_crtc.c b/drivers/gpu/drm/amd/display/amdgpu_dm/amdgpu_dm_crtc.c
-index 87058271b00cc..2551823382f8b 100644
---- a/drivers/gpu/drm/amd/display/amdgpu_dm/amdgpu_dm_crtc.c
-+++ b/drivers/gpu/drm/amd/display/amdgpu_dm/amdgpu_dm_crtc.c
-@@ -728,7 +728,16 @@ int amdgpu_dm_crtc_init(struct amdgpu_display_manager *dm,
- 	 * support programmable degamma anywhere.
- 	 */
- 	is_dcn = dm->adev->dm.dc->caps.color.dpp.dcn_arch;
--	drm_crtc_enable_color_mgmt(&acrtc->base, is_dcn ? MAX_COLOR_LUT_ENTRIES : 0,
-+	/* Dont't enable DRM CRTC degamma property for DCN401 since the
-+	 * pre-blending degamma LUT doesn't apply to cursor, and therefore
-+	 * can't work similar to a post-blending degamma LUT as in other hw
-+	 * versions.
-+	 * TODO: revisit it once KMS plane color API is merged.
-+	 */
-+	drm_crtc_enable_color_mgmt(&acrtc->base,
-+				   (is_dcn &&
-+				    dm->adev->dm.dc->ctx->dce_version != DCN_VERSION_4_01) ?
-+				     MAX_COLOR_LUT_ENTRIES : 0,
- 				   true, MAX_COLOR_LUT_ENTRIES);
+diff --git a/kernel/workqueue.c b/kernel/workqueue.c
+index 9f9148075828..f0bd688bb88b 100644
+--- a/kernel/workqueue.c
++++ b/kernel/workqueue.c
+@@ -1686,17 +1686,14 @@ static void __pwq_activate_work(struct pool_workqueue *pwq,
+ static bool tryinc_node_nr_active(struct wq_node_nr_active *nna)
+ {
+ 	int max = READ_ONCE(nna->max);
++	int old = atomic_read(&nna->nr);
  
- 	drm_mode_crtc_set_gamma_size(&acrtc->base, MAX_COLOR_LEGACY_LUT_ENTRIES);
+-	while (true) {
+-		int old, tmp;
+-
+-		old = atomic_read(&nna->nr);
++	do {
+ 		if (old >= max)
+ 			return false;
+-		tmp = atomic_cmpxchg_relaxed(&nna->nr, old, old + 1);
+-		if (tmp == old)
+-			return true;
+-	}
++	} while (!atomic_try_cmpxchg_relaxed(&nna->nr, &old, old + 1));
++
++	return true;
+ }
+ 
+ /**
 -- 
-2.50.0
+2.50.1
+
