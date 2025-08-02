@@ -102,13 +102,13 @@ index b47b3d0ce559..6ac658944390 100644
  	If set, provide RFC2861 behavior and time out the congestion
  	window after an idle period.  An idle period is defined at
 diff --git a/Makefile b/Makefile
-index 4efcf0614caf..53c2312ae8cb 100644
+index 0e07b0834a7c..35c764bcda17 100644
 --- a/Makefile
 +++ b/Makefile
 @@ -2,7 +2,7 @@
  VERSION = 6
  PATCHLEVEL = 1
- SUBLEVEL = 144
+ SUBLEVEL = 147
 -EXTRAVERSION =
 +EXTRAVERSION = -hardened1
  NAME = Curry Ramen
@@ -209,7 +209,7 @@ index 97932fbf973d..40c6468c093a 100644
  
  #ifdef __AARCH64EB__
 diff --git a/arch/x86/Kconfig b/arch/x86/Kconfig
-index 1da950b1d41a..743a859b8109 100644
+index f23510275076..f1f7b0ff6dfb 100644
 --- a/arch/x86/Kconfig
 +++ b/arch/x86/Kconfig
 @@ -1229,8 +1229,7 @@ config VM86
@@ -591,10 +591,10 @@ index 7d338e9c0657..64ac3c36fa1a 100644
  ifdef CONFIG_USB_ONBOARD_HUB
  usbcore-y			+= ../misc/onboard_usb_hub_pdevs.o
 diff --git a/drivers/usb/core/hub.c b/drivers/usb/core/hub.c
-index e6435408ea6c..44815eee50e6 100644
+index 5c8400dc7923..5c35d9ab2f46 100644
 --- a/drivers/usb/core/hub.c
 +++ b/drivers/usb/core/hub.c
-@@ -5374,6 +5374,12 @@ static void hub_port_connect(struct usb_hub *hub, int port1, u16 portstatus,
+@@ -5402,6 +5402,12 @@ static void hub_port_connect(struct usb_hub *hub, int port1, u16 portstatus,
  			goto done;
  		return;
  	}
@@ -905,10 +905,10 @@ index 65efb74c3585..7fca4dd7f3b1 100644
  {
  	return true;
 diff --git a/include/linux/fs.h b/include/linux/fs.h
-index 08fba309ddc7..368111b3e9d5 100644
+index 1a619b681bcc..b2d3f5c62107 100644
 --- a/include/linux/fs.h
 +++ b/include/linux/fs.h
-@@ -3741,4 +3741,15 @@ extern int vfs_fadvise(struct file *file, loff_t offset, loff_t len,
+@@ -3743,4 +3743,15 @@ extern int vfs_fadvise(struct file *file, loff_t offset, loff_t len,
  extern int generic_fadvise(struct file *file, loff_t offset, loff_t len,
  			   int advice);
  
@@ -1263,7 +1263,7 @@ index 765194f5d678..6a6e53edef46 100644
  
  /**
 diff --git a/kernel/events/core.c b/kernel/events/core.c
-index 2761db0365dd..ae31cb1512ab 100644
+index f815b808db20..9137f4e6695c 100644
 --- a/kernel/events/core.c
 +++ b/kernel/events/core.c
 @@ -415,8 +415,13 @@ static struct kmem_cache *perf_event_cache;

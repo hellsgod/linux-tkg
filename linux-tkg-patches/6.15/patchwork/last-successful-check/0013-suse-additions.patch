@@ -1,2 +1,2 @@
-_patch_sha256_sum=166266b598e99deb7d4f8323f71459e094924e66b9a30235116f326ab23ee9fd
-_patch_kernel_tag=v6.15.4
+_patch_branch_hash=196ea7e6dc4e01ff779a2fa31b5f988f0190d8493534124799fa02978ce62c94
+_patch_kernel_tag=v6.15.9
