@@ -1,5 +1,5 @@
 diff --git a/drivers/gpu/drm/drm_atomic_uapi.c b/drivers/gpu/drm/drm_atomic_uapi.c
-index ecc73d52bfae4..85dbdaa4a2e25 100644
+index ecc73d52bfae..85dbdaa4a2e2 100644
 --- a/drivers/gpu/drm/drm_atomic_uapi.c
 +++ b/drivers/gpu/drm/drm_atomic_uapi.c
 @@ -1078,19 +1078,20 @@ int drm_atomic_set_property(struct drm_atomic_state *state,
@@ -35,7 +35,7 @@ index ecc73d52bfae4..85dbdaa4a2e25 100644
  					ret = plane_funcs->atomic_async_check(plane, state, true);
  
 diff --git a/include/linux/btf.h b/include/linux/btf.h
-index 9eda6b113f9b4..f06976ffb63f9 100644
+index 9eda6b113f9b..f06976ffb63f 100644
 --- a/include/linux/btf.h
 +++ b/include/linux/btf.h
 @@ -86,7 +86,7 @@
@@ -47,34 +47,8 @@ index 9eda6b113f9b4..f06976ffb63f9 100644
  
  #define __bpf_kfunc_start_defs()					       \
  	__diag_push();							       \
-diff --git a/net/ipv4/route.c b/net/ipv4/route.c
-index baa43e5966b19..05a5d185807a6 100644
---- a/net/ipv4/route.c
-+++ b/net/ipv4/route.c
-@@ -2592,6 +2592,7 @@ static struct rtable *__mkroute_output(const struct fib_result *res,
- 	do_cache = true;
- 	if (type == RTN_BROADCAST) {
- 		flags |= RTCF_BROADCAST | RTCF_LOCAL;
-+		fi = NULL;
- 	} else if (type == RTN_MULTICAST) {
- 		flags |= RTCF_MULTICAST | RTCF_LOCAL;
- 		if (!ip_check_mc_rcu(in_dev, fl4->daddr, fl4->saddr,
-@@ -2661,8 +2662,12 @@ static struct rtable *__mkroute_output(const struct fib_result *res,
- 			rth->dst.output = ip_mc_output;
- 			RT_CACHE_STAT_INC(out_slow_mc);
- 		}
-+		if (type == RTN_BROADCAST && res->fi) {
-+			/* ensure MTU value for broadcast routes is retained */
-+			ip_dst_init_metrics(&rth->dst, res->fi->fib_metrics);
-+		}
- #ifdef CONFIG_IP_MROUTE
--		if (type == RTN_MULTICAST) {
-+		else if (type == RTN_MULTICAST) {
- 			if (IN_DEV_MFORWARD(in_dev) &&
- 			    !ipv4_is_local_multicast(fl4->daddr)) {
- 				rth->dst.input = ip_mr_input;
 diff --git a/scripts/package/PKGBUILD b/scripts/package/PKGBUILD
-index 452374d63c244..08f80d7c5df05 100644
+index 452374d63c24..08f80d7c5df0 100644
 --- a/scripts/package/PKGBUILD
 +++ b/scripts/package/PKGBUILD
 @@ -90,6 +90,11 @@ _package-headers() {
