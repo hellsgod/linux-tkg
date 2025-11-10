@@ -200,8 +200,32 @@ index 08ed5a2e46a5f..3bcf9f180c21d 100644
  
  static inline void indirect_branch_prediction_barrier(void)
  {
+diff --git a/arch/x86/kernel/cpu/amd.c b/arch/x86/kernel/cpu/amd.c
+index 2ba9f2d42d8c9..c00b7572292ad 100644
+--- a/arch/x86/kernel/cpu/amd.c
++++ b/arch/x86/kernel/cpu/amd.c
+@@ -1035,19 +1035,8 @@ static void init_amd_zen4(struct cpuinfo_x86 *c)
+ 	}
+ }
+ 
+-static const struct x86_cpu_id zen5_rdseed_microcode[] = {
+-	ZEN_MODEL_STEP_UCODE(0x1a, 0x02, 0x1, 0x0b00215a),
+-	ZEN_MODEL_STEP_UCODE(0x1a, 0x11, 0x0, 0x0b101054),
+-	{},
+-};
+-
+ static void init_amd_zen5(struct cpuinfo_x86 *c)
+ {
+-	if (!x86_match_min_microcode_rev(zen5_rdseed_microcode)) {
+-		clear_cpu_cap(c, X86_FEATURE_RDSEED);
+-		msr_clear_bit(MSR_AMD64_CPUID_FN_7, 18);
+-		pr_emerg_once("RDSEED32 is broken. Disabling the corresponding CPUID bit.\n");
+-	}
+ }
+ 
+ static void init_amd(struct cpuinfo_x86 *c)
 diff --git a/arch/x86/kernel/cpu/bugs.c b/arch/x86/kernel/cpu/bugs.c
-index 6a526ae1fe993..02fd37bf4e6d7 100644
+index d7fa03bf51b45..3d738f6a1ebb9 100644
 --- a/arch/x86/kernel/cpu/bugs.c
 +++ b/arch/x86/kernel/cpu/bugs.c
 @@ -109,12 +109,11 @@ DEFINE_PER_CPU(u64, x86_spec_ctrl_current);
@@ -221,7 +245,7 @@ index 6a526ae1fe993..02fd37bf4e6d7 100644
  
  u64 x86_pred_cmd __ro_after_init = PRED_CMD_IBPB;
  
-@@ -3202,13 +3201,15 @@ enum vmscape_mitigations {
+@@ -3197,13 +3196,15 @@ enum vmscape_mitigations {
  	VMSCAPE_MITIGATION_AUTO,
  	VMSCAPE_MITIGATION_IBPB_EXIT_TO_USER,
  	VMSCAPE_MITIGATION_IBPB_ON_VMEXIT,
@@ -240,7 +264,7 @@ index 6a526ae1fe993..02fd37bf4e6d7 100644
  };
  
  static enum vmscape_mitigations vmscape_mitigation __ro_after_init =
-@@ -3226,6 +3227,8 @@ static int __init vmscape_parse_cmdline(char *str)
+@@ -3221,6 +3222,8 @@ static int __init vmscape_parse_cmdline(char *str)
  	} else if (!strcmp(str, "force")) {
  		setup_force_cpu_bug(X86_BUG_VMSCAPE);
  		vmscape_mitigation = VMSCAPE_MITIGATION_AUTO;
@@ -249,7 +273,7 @@ index 6a526ae1fe993..02fd37bf4e6d7 100644
  	} else {
  		pr_err("Ignoring unknown vmscape=%s option.\n", str);
  	}
-@@ -3236,18 +3239,35 @@ early_param("vmscape", vmscape_parse_cmdline);
+@@ -3231,18 +3234,35 @@ early_param("vmscape", vmscape_parse_cmdline);
  
  static void __init vmscape_select_mitigation(void)
  {
@@ -292,7 +316,7 @@ index 6a526ae1fe993..02fd37bf4e6d7 100644
  }
  
  static void __init vmscape_update_mitigation(void)
-@@ -3266,6 +3286,8 @@ static void __init vmscape_apply_mitigation(void)
+@@ -3261,6 +3281,8 @@ static void __init vmscape_apply_mitigation(void)
  {
  	if (vmscape_mitigation == VMSCAPE_MITIGATION_IBPB_EXIT_TO_USER)
  		setup_force_cpu_cap(X86_FEATURE_IBPB_EXIT_TO_USER);
@@ -301,7 +325,7 @@ index 6a526ae1fe993..02fd37bf4e6d7 100644
  }
  
  #undef pr_fmt
-@@ -3357,6 +3379,7 @@ void cpu_bugs_smt_update(void)
+@@ -3352,6 +3374,7 @@ void cpu_bugs_smt_update(void)
  		break;
  	case VMSCAPE_MITIGATION_IBPB_ON_VMEXIT:
  	case VMSCAPE_MITIGATION_IBPB_EXIT_TO_USER:
@@ -375,73 +399,6 @@ index 22602c32faa5b..fa995e235d9b4 100644
  }
  
  u8 iwl_mvm_mac80211_ac_to_ucode_ac(enum ieee80211_ac_numbers ac)
-diff --git a/kernel/events/core.c b/kernel/events/core.c
-index 177e57c1a362f..6e4af974ef7c8 100644
---- a/kernel/events/core.c
-+++ b/kernel/events/core.c
-@@ -11773,7 +11773,8 @@ static enum hrtimer_restart perf_swevent_hrtimer(struct hrtimer *hrtimer)
- 
- 	event = container_of(hrtimer, struct perf_event, hw.hrtimer);
- 
--	if (event->state != PERF_EVENT_STATE_ACTIVE)
-+	if (event->state != PERF_EVENT_STATE_ACTIVE ||
-+	    event->hw.state & PERF_HES_STOPPED)
- 		return HRTIMER_NORESTART;
- 
- 	event->pmu->read(event);
-@@ -11819,15 +11820,18 @@ static void perf_swevent_cancel_hrtimer(struct perf_event *event)
- 	struct hw_perf_event *hwc = &event->hw;
- 
- 	/*
--	 * The throttle can be triggered in the hrtimer handler.
--	 * The HRTIMER_NORESTART should be used to stop the timer,
--	 * rather than hrtimer_cancel(). See perf_swevent_hrtimer()
-+	 * The event stop can be triggered in the hrtimer handler.
-+	 * So use hrtimer_try_to_cancel() instead of hrtimer_cancel()
-+	 * to stop the hrtimer() to avoid trapping into a dead loop.
-+	 * Simultaneously the event would be set PERF_HES_STOPPED flag,
-+	 * perf_swevent_hrtimer() would stop the event hrtimer once it
-+	 * detects the PERF_HES_STOPPED flag.
- 	 */
- 	if (is_sampling_event(event) && (hwc->interrupts != MAX_INTERRUPTS)) {
- 		ktime_t remaining = hrtimer_get_remaining(&hwc->hrtimer);
- 		local64_set(&hwc->period_left, ktime_to_ns(remaining));
- 
--		hrtimer_cancel(&hwc->hrtimer);
-+		hrtimer_try_to_cancel(&hwc->hrtimer);
- 	}
- }
- 
-@@ -11871,12 +11875,14 @@ static void cpu_clock_event_update(struct perf_event *event)
- 
- static void cpu_clock_event_start(struct perf_event *event, int flags)
- {
-+	event->hw.state = 0;
- 	local64_set(&event->hw.prev_count, local_clock());
- 	perf_swevent_start_hrtimer(event);
- }
- 
- static void cpu_clock_event_stop(struct perf_event *event, int flags)
- {
-+	event->hw.state = PERF_HES_STOPPED;
- 	perf_swevent_cancel_hrtimer(event);
- 	if (flags & PERF_EF_UPDATE)
- 		cpu_clock_event_update(event);
-@@ -11950,12 +11956,14 @@ static void task_clock_event_update(struct perf_event *event, u64 now)
- 
- static void task_clock_event_start(struct perf_event *event, int flags)
- {
-+	event->hw.state = 0;
- 	local64_set(&event->hw.prev_count, event->ctx->time);
- 	perf_swevent_start_hrtimer(event);
- }
- 
- static void task_clock_event_stop(struct perf_event *event, int flags)
- {
-+	event->hw.state = PERF_HES_STOPPED;
- 	perf_swevent_cancel_hrtimer(event);
- 	if (flags & PERF_EF_UPDATE)
- 		task_clock_event_update(event, event->ctx->time);
 diff --git a/scripts/package/PKGBUILD b/scripts/package/PKGBUILD
 index 452374d63c244..08f80d7c5df05 100644
 --- a/scripts/package/PKGBUILD
