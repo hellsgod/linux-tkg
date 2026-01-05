@@ -1,5 +1,105 @@
+diff --git a/arch/arm/include/asm/mmu_context.h b/arch/arm/include/asm/mmu_context.h
+index db2cb06aa8cf..bebde469f81a 100644
+--- a/arch/arm/include/asm/mmu_context.h
++++ b/arch/arm/include/asm/mmu_context.h
+@@ -80,7 +80,7 @@ static inline void check_and_switch_context(struct mm_struct *mm,
+ #ifndef MODULE
+ #define finish_arch_post_lock_switch \
+ 	finish_arch_post_lock_switch
+-static inline void finish_arch_post_lock_switch(void)
++static __always_inline void finish_arch_post_lock_switch(void)
+ {
+ 	struct mm_struct *mm = current->mm;
+ 
+diff --git a/arch/riscv/include/asm/sync_core.h b/arch/riscv/include/asm/sync_core.h
+index 9153016da8f1..2fe6b7fe6b12 100644
+--- a/arch/riscv/include/asm/sync_core.h
++++ b/arch/riscv/include/asm/sync_core.h
+@@ -6,7 +6,7 @@
+  * RISC-V implements return to user-space through an xRET instruction,
+  * which is not core serializing.
+  */
+-static inline void sync_core_before_usermode(void)
++static __always_inline void sync_core_before_usermode(void)
+ {
+ 	asm volatile ("fence.i" ::: "memory");
+ }
+diff --git a/arch/s390/include/asm/mmu_context.h b/arch/s390/include/asm/mmu_context.h
+index d9b8501bc93d..c124ef6a01b3 100644
+--- a/arch/s390/include/asm/mmu_context.h
++++ b/arch/s390/include/asm/mmu_context.h
+@@ -97,7 +97,7 @@ static inline void switch_mm(struct mm_struct *prev, struct mm_struct *next,
+ }
+ 
+ #define finish_arch_post_lock_switch finish_arch_post_lock_switch
+-static inline void finish_arch_post_lock_switch(void)
++static __always_inline void finish_arch_post_lock_switch(void)
+ {
+ 	struct task_struct *tsk = current;
+ 	struct mm_struct *mm = tsk->mm;
+diff --git a/arch/sparc/include/asm/mmu_context_64.h b/arch/sparc/include/asm/mmu_context_64.h
+index 78bbacc14d2d..d1967214ef25 100644
+--- a/arch/sparc/include/asm/mmu_context_64.h
++++ b/arch/sparc/include/asm/mmu_context_64.h
+@@ -160,7 +160,7 @@ static inline void arch_start_context_switch(struct task_struct *prev)
+ }
+ 
+ #define finish_arch_post_lock_switch	finish_arch_post_lock_switch
+-static inline void finish_arch_post_lock_switch(void)
++static __always_inline void finish_arch_post_lock_switch(void)
+ {
+ 	/* Restore the state of MCDPER register for the new process
+ 	 * just switched to.
+diff --git a/arch/x86/include/asm/mmu_context.h b/arch/x86/include/asm/mmu_context.h
+index 73bf3b1b44e8..ecd134dcfb34 100644
+--- a/arch/x86/include/asm/mmu_context.h
++++ b/arch/x86/include/asm/mmu_context.h
+@@ -136,8 +136,29 @@ static inline void mm_reset_untag_mask(struct mm_struct *mm)
+ }
+ #endif
+ 
++/*
++ * Please ignore the name of this function.  It should be called
++ * switch_to_kernel_thread().
++ *
++ * enter_lazy_tlb() is a hint from the scheduler that we are entering a
++ * kernel thread or other context without an mm.  Acceptable implementations
++ * include doing nothing whatsoever, switching to init_mm, or various clever
++ * lazy tricks to try to minimize TLB flushes.
++ *
++ * The scheduler reserves the right to call enter_lazy_tlb() several times
++ * in a row.  It will notify us that we're going back to a real mm by
++ * calling switch_mm_irqs_off().
++ */
+ #define enter_lazy_tlb enter_lazy_tlb
+-extern void enter_lazy_tlb(struct mm_struct *mm, struct task_struct *tsk);
++#ifndef MODULE
++static __always_inline void enter_lazy_tlb(struct mm_struct *mm, struct task_struct *tsk)
++{
++	if (this_cpu_read(cpu_tlbstate.loaded_mm) == &init_mm)
++		return;
++
++	this_cpu_write(cpu_tlbstate_shared.is_lazy, true);
++}
++#endif
+ 
+ #define mm_init_global_asid mm_init_global_asid
+ extern void mm_init_global_asid(struct mm_struct *mm);
+diff --git a/arch/x86/include/asm/sync_core.h b/arch/x86/include/asm/sync_core.h
+index 96bda43538ee..4b55fa353bb5 100644
+--- a/arch/x86/include/asm/sync_core.h
++++ b/arch/x86/include/asm/sync_core.h
+@@ -93,7 +93,7 @@ static __always_inline void sync_core(void)
+  * to user-mode. x86 implements return to user-space through sysexit,
+  * sysrel, and sysretq, which are not core serializing.
+  */
+-static inline void sync_core_before_usermode(void)
++static __always_inline void sync_core_before_usermode(void)
+ {
+ 	/* With PTI, we unconditionally serialize before running user code. */
+ 	if (static_cpu_has(X86_FEATURE_PTI))
 diff --git a/arch/x86/kernel/cpu/amd.c b/arch/x86/kernel/cpu/amd.c
-index bc94ff1e250ad..ce70a9c5baca7 100644
+index bc94ff1e250a..ce70a9c5baca 100644
 --- a/arch/x86/kernel/cpu/amd.c
 +++ b/arch/x86/kernel/cpu/amd.c
 @@ -1035,6 +1035,7 @@ static void init_amd_zen4(struct cpuinfo_x86 *c)
@@ -22,8 +122,590 @@ index bc94ff1e250ad..ce70a9c5baca7 100644
  
  static void init_amd(struct cpuinfo_x86 *c)
  {
+diff --git a/arch/x86/mm/tlb.c b/arch/x86/mm/tlb.c
+index f5b93e01e347..71abaf0bdb91 100644
+--- a/arch/x86/mm/tlb.c
++++ b/arch/x86/mm/tlb.c
+@@ -971,27 +971,6 @@ void switch_mm_irqs_off(struct mm_struct *unused, struct mm_struct *next,
+ 	}
+ }
+ 
+-/*
+- * Please ignore the name of this function.  It should be called
+- * switch_to_kernel_thread().
+- *
+- * enter_lazy_tlb() is a hint from the scheduler that we are entering a
+- * kernel thread or other context without an mm.  Acceptable implementations
+- * include doing nothing whatsoever, switching to init_mm, or various clever
+- * lazy tricks to try to minimize TLB flushes.
+- *
+- * The scheduler reserves the right to call enter_lazy_tlb() several times
+- * in a row.  It will notify us that we're going back to a real mm by
+- * calling switch_mm_irqs_off().
+- */
+-void enter_lazy_tlb(struct mm_struct *mm, struct task_struct *tsk)
+-{
+-	if (this_cpu_read(cpu_tlbstate.loaded_mm) == &init_mm)
+-		return;
+-
+-	this_cpu_write(cpu_tlbstate_shared.is_lazy, true);
+-}
+-
+ /*
+  * Using a temporary mm allows to set temporary mappings that are not accessible
+  * by other CPUs. Such mappings are needed to perform sensitive memory writes
+diff --git a/include/linux/compiler_types.h b/include/linux/compiler_types.h
+index d3318a3c2577..996e9af3f991 100644
+--- a/include/linux/compiler_types.h
++++ b/include/linux/compiler_types.h
+@@ -587,6 +587,25 @@ struct ftrace_likely_data {
+ 			 __scalar_type_to_expr_cases(long long),	\
+ 			 default: (x)))
+ 
++/*
++ * __signed_scalar_typeof(x) - Declare a signed scalar type, leaving
++ *			       non-scalar types unchanged.
++ */
++
++#define __scalar_type_to_signed_cases(type)				\
++		unsigned type:	(signed type)0,				\
++		signed type:	(signed type)0
++
++#define __signed_scalar_typeof(x) typeof(				\
++		_Generic((x),						\
++			 char:	(signed char)0,				\
++			 __scalar_type_to_signed_cases(char),		\
++			 __scalar_type_to_signed_cases(short),		\
++			 __scalar_type_to_signed_cases(int),		\
++			 __scalar_type_to_signed_cases(long),		\
++			 __scalar_type_to_signed_cases(long long),	\
++			 default: (x)))
++
+ /* Is this type a native word size -- useful for atomic operations */
+ #define __native_word(t) \
+ 	(sizeof(t) == sizeof(char) || sizeof(t) == sizeof(short) || \
+diff --git a/include/linux/perf_event.h b/include/linux/perf_event.h
+index 9870d768db4c..d9de20c20f38 100644
+--- a/include/linux/perf_event.h
++++ b/include/linux/perf_event.h
+@@ -1624,7 +1624,7 @@ static inline void perf_event_task_migrate(struct task_struct *task)
+ 		task->sched_migrated = 1;
+ }
+ 
+-static inline void perf_event_task_sched_in(struct task_struct *prev,
++static __always_inline void perf_event_task_sched_in(struct task_struct *prev,
+ 					    struct task_struct *task)
+ {
+ 	if (static_branch_unlikely(&perf_sched_events))
+diff --git a/include/linux/sched/mm.h b/include/linux/sched/mm.h
+index 0e1d73955fa5..e7787a6e7d22 100644
+--- a/include/linux/sched/mm.h
++++ b/include/linux/sched/mm.h
+@@ -44,7 +44,7 @@ static inline void smp_mb__after_mmgrab(void)
+ 
+ extern void __mmdrop(struct mm_struct *mm);
+ 
+-static inline void mmdrop(struct mm_struct *mm)
++static __always_inline void mmdrop(struct mm_struct *mm)
+ {
+ 	/*
+ 	 * The implicit full barrier implied by atomic_dec_and_test() is
+@@ -71,14 +71,14 @@ static inline void __mmdrop_delayed(struct rcu_head *rhp)
+  * Invoked from finish_task_switch(). Delegates the heavy lifting on RT
+  * kernels via RCU.
+  */
+-static inline void mmdrop_sched(struct mm_struct *mm)
++static __always_inline void mmdrop_sched(struct mm_struct *mm)
+ {
+ 	/* Provides a full memory barrier. See mmdrop() */
+ 	if (atomic_dec_and_test(&mm->mm_count))
+ 		call_rcu(&mm->delayed_drop, __mmdrop_delayed);
+ }
+ #else
+-static inline void mmdrop_sched(struct mm_struct *mm)
++static __always_inline void mmdrop_sched(struct mm_struct *mm)
+ {
+ 	mmdrop(mm);
+ }
+@@ -104,7 +104,7 @@ static inline void mmdrop_lazy_tlb(struct mm_struct *mm)
+ 	}
+ }
+ 
+-static inline void mmdrop_lazy_tlb_sched(struct mm_struct *mm)
++static __always_inline void mmdrop_lazy_tlb_sched(struct mm_struct *mm)
+ {
+ 	if (IS_ENABLED(CONFIG_MMU_LAZY_TLB_REFCOUNT))
+ 		mmdrop_sched(mm);
+@@ -531,7 +531,7 @@ enum {
+ #include <asm/membarrier.h>
+ #endif
+ 
+-static inline void membarrier_mm_sync_core_before_usermode(struct mm_struct *mm)
++static __always_inline void membarrier_mm_sync_core_before_usermode(struct mm_struct *mm)
+ {
+ 	/*
+ 	 * The atomic_read() below prevents CSE. The following should
+diff --git a/include/linux/tick.h b/include/linux/tick.h
+index ac76ae9fa36d..fce16aa10ba2 100644
+--- a/include/linux/tick.h
++++ b/include/linux/tick.h
+@@ -175,7 +175,7 @@ extern cpumask_var_t tick_nohz_full_mask;
+ #ifdef CONFIG_NO_HZ_FULL
+ extern bool tick_nohz_full_running;
+ 
+-static inline bool tick_nohz_full_enabled(void)
++static __always_inline bool tick_nohz_full_enabled(void)
+ {
+ 	if (!context_tracking_enabled())
+ 		return false;
+@@ -299,7 +299,7 @@ static inline void __tick_nohz_task_switch(void) { }
+ static inline void tick_nohz_full_setup(cpumask_var_t cpumask) { }
+ #endif
+ 
+-static inline void tick_nohz_task_switch(void)
++static __always_inline void tick_nohz_task_switch(void)
+ {
+ 	if (tick_nohz_full_enabled())
+ 		__tick_nohz_task_switch();
+diff --git a/include/linux/vtime.h b/include/linux/vtime.h
+index 29dd5b91dd7d..428464bb81b3 100644
+--- a/include/linux/vtime.h
++++ b/include/linux/vtime.h
+@@ -67,24 +67,24 @@ static __always_inline void vtime_account_guest_exit(void)
+  * For now vtime state is tied to context tracking. We might want to decouple
+  * those later if necessary.
+  */
+-static inline bool vtime_accounting_enabled(void)
++static __always_inline bool vtime_accounting_enabled(void)
+ {
+ 	return context_tracking_enabled();
+ }
+ 
+-static inline bool vtime_accounting_enabled_cpu(int cpu)
++static __always_inline bool vtime_accounting_enabled_cpu(int cpu)
+ {
+ 	return context_tracking_enabled_cpu(cpu);
+ }
+ 
+-static inline bool vtime_accounting_enabled_this_cpu(void)
++static __always_inline bool vtime_accounting_enabled_this_cpu(void)
+ {
+ 	return context_tracking_enabled_this_cpu();
+ }
+ 
+ extern void vtime_task_switch_generic(struct task_struct *prev);
+ 
+-static inline void vtime_task_switch(struct task_struct *prev)
++static __always_inline void vtime_task_switch(struct task_struct *prev)
+ {
+ 	if (vtime_accounting_enabled_this_cpu())
+ 		vtime_task_switch_generic(prev);
+diff --git a/kernel/sched/core.c b/kernel/sched/core.c
+index 41ba0be16911..9f3e8fe0c5b8 100644
+--- a/kernel/sched/core.c
++++ b/kernel/sched/core.c
+@@ -678,11 +678,6 @@ bool raw_spin_rq_trylock(struct rq *rq)
+ 	}
+ }
+ 
+-void raw_spin_rq_unlock(struct rq *rq)
+-{
+-	raw_spin_unlock(rq_lockp(rq));
+-}
+-
+ /*
+  * double_rq_lock - safely lock two runqueues
+  */
+@@ -4869,7 +4864,7 @@ static inline void prepare_task(struct task_struct *next)
+ 	WRITE_ONCE(next->on_cpu, 1);
+ }
+ 
+-static inline void finish_task(struct task_struct *prev)
++static __always_inline void finish_task(struct task_struct *prev)
+ {
+ 	/*
+ 	 * This must be the very last reference to @prev from this CPU. After
+@@ -4885,7 +4880,7 @@ static inline void finish_task(struct task_struct *prev)
+ 	smp_store_release(&prev->on_cpu, 0);
+ }
+ 
+-static void do_balance_callbacks(struct rq *rq, struct balance_callback *head)
++static __always_inline void do_balance_callbacks(struct rq *rq, struct balance_callback *head)
+ {
+ 	void (*func)(struct rq *rq);
+ 	struct balance_callback *next;
+@@ -4920,7 +4915,7 @@ struct balance_callback balance_push_callback = {
+ 	.func = balance_push,
+ };
+ 
+-static inline struct balance_callback *
++static __always_inline struct balance_callback *
+ __splice_balance_callbacks(struct rq *rq, bool split)
+ {
+ 	struct balance_callback *head = rq->balance_callback;
+@@ -4950,7 +4945,7 @@ struct balance_callback *splice_balance_callbacks(struct rq *rq)
+ 	return __splice_balance_callbacks(rq, true);
+ }
+ 
+-static void __balance_callbacks(struct rq *rq)
++static __always_inline void __balance_callbacks(struct rq *rq)
+ {
+ 	do_balance_callbacks(rq, __splice_balance_callbacks(rq, false));
+ }
+@@ -4983,7 +4978,7 @@ prepare_lock_switch(struct rq *rq, struct task_struct *next, struct rq_flags *rf
+ #endif
+ }
+ 
+-static inline void finish_lock_switch(struct rq *rq)
++static __always_inline void finish_lock_switch(struct rq *rq)
+ {
+ 	/*
+ 	 * If we are tracking spinlock dependencies then we have to
+@@ -5015,7 +5010,7 @@ static inline void kmap_local_sched_out(void)
+ #endif
+ }
+ 
+-static inline void kmap_local_sched_in(void)
++static __always_inline void kmap_local_sched_in(void)
+ {
+ #ifdef CONFIG_KMAP_LOCAL
+ 	if (unlikely(current->kmap_ctrl.idx))
+@@ -5068,7 +5063,7 @@ prepare_task_switch(struct rq *rq, struct task_struct *prev,
+  * past. 'prev == current' is still correct but we need to recalculate this_rq
+  * because prev may have moved to another CPU.
+  */
+-static struct rq *finish_task_switch(struct task_struct *prev)
++static __always_inline struct rq *finish_task_switch(struct task_struct *prev)
+ 	__releases(rq->lock)
+ {
+ 	struct rq *rq = this_rq();
+diff --git a/kernel/sched/fair.c b/kernel/sched/fair.c
+index da46c3164537..6c89c5a49f10 100644
+--- a/kernel/sched/fair.c
++++ b/kernel/sched/fair.c
+@@ -3693,7 +3693,7 @@ account_entity_dequeue(struct cfs_rq *cfs_rq, struct sched_entity *se)
+  */
+ #define add_positive(_ptr, _val) do {                           \
+ 	typeof(_ptr) ptr = (_ptr);                              \
+-	typeof(_val) val = (_val);                              \
++	__signed_scalar_typeof(*ptr) val = (_val);              \
+ 	typeof(*ptr) res, var = READ_ONCE(*ptr);                \
+ 								\
+ 	res = var + val;                                        \
+@@ -3704,23 +3704,6 @@ account_entity_dequeue(struct cfs_rq *cfs_rq, struct sched_entity *se)
+ 	WRITE_ONCE(*ptr, res);                                  \
+ } while (0)
+ 
+-/*
+- * Unsigned subtract and clamp on underflow.
+- *
+- * Explicitly do a load-store to ensure the intermediate value never hits
+- * memory. This allows lockless observations without ever seeing the negative
+- * values.
+- */
+-#define sub_positive(_ptr, _val) do {				\
+-	typeof(_ptr) ptr = (_ptr);				\
+-	typeof(*ptr) val = (_val);				\
+-	typeof(*ptr) res, var = READ_ONCE(*ptr);		\
+-	res = var - val;					\
+-	if (res > var)						\
+-		res = 0;					\
+-	WRITE_ONCE(*ptr, res);					\
+-} while (0)
+-
+ /*
+  * Remove and clamp on negative, from a local variable.
+  *
+@@ -3732,21 +3715,39 @@ account_entity_dequeue(struct cfs_rq *cfs_rq, struct sched_entity *se)
+ 	*ptr -= min_t(typeof(*ptr), *ptr, _val);		\
+ } while (0)
+ 
++
++/*
++ * Because of rounding, se->util_sum might ends up being +1 more than
++ * cfs->util_sum. Although this is not a problem by itself, detaching
++ * a lot of tasks with the rounding problem between 2 updates of
++ * util_avg (~1ms) can make cfs->util_sum becoming null whereas
++ * cfs_util_avg is not.
++ *
++ * Check that util_sum is still above its lower bound for the new
++ * util_avg. Given that period_contrib might have moved since the last
++ * sync, we are only sure that util_sum must be above or equal to
++ *    util_avg * minimum possible divider
++ */
++#define __update_sa(sa, name, delta_avg, delta_sum) do {	\
++	add_positive(&(sa)->name##_avg, delta_avg);		\
++	add_positive(&(sa)->name##_sum, delta_sum);		\
++	(sa)->name##_sum = max_t(typeof((sa)->name##_sum),	\
++			       (sa)->name##_sum,		\
++			       (sa)->name##_avg * PELT_MIN_DIVIDER); \
++} while (0)
++
+ static inline void
+ enqueue_load_avg(struct cfs_rq *cfs_rq, struct sched_entity *se)
+ {
+-	cfs_rq->avg.load_avg += se->avg.load_avg;
+-	cfs_rq->avg.load_sum += se_weight(se) * se->avg.load_sum;
++	__update_sa(&cfs_rq->avg, load, se->avg.load_avg,
++		    se_weight(se) * se->avg.load_sum);
+ }
+ 
+ static inline void
+ dequeue_load_avg(struct cfs_rq *cfs_rq, struct sched_entity *se)
+ {
+-	sub_positive(&cfs_rq->avg.load_avg, se->avg.load_avg);
+-	sub_positive(&cfs_rq->avg.load_sum, se_weight(se) * se->avg.load_sum);
+-	/* See update_cfs_rq_load_avg() */
+-	cfs_rq->avg.load_sum = max_t(u32, cfs_rq->avg.load_sum,
+-					  cfs_rq->avg.load_avg * PELT_MIN_DIVIDER);
++	__update_sa(&cfs_rq->avg, load, -se->avg.load_avg,
++		    se_weight(se) * -se->avg.load_sum);
+ }
+ 
+ static void place_entity(struct cfs_rq *cfs_rq, struct sched_entity *se, int flags);
+@@ -4242,7 +4243,6 @@ update_tg_cfs_util(struct cfs_rq *cfs_rq, struct sched_entity *se, struct cfs_rq
+ 	 */
+ 	divider = get_pelt_divider(&cfs_rq->avg);
+ 
+-
+ 	/* Set new sched_entity's utilization */
+ 	se->avg.util_avg = gcfs_rq->avg.util_avg;
+ 	new_sum = se->avg.util_avg * divider;
+@@ -4250,12 +4250,7 @@ update_tg_cfs_util(struct cfs_rq *cfs_rq, struct sched_entity *se, struct cfs_rq
+ 	se->avg.util_sum = new_sum;
+ 
+ 	/* Update parent cfs_rq utilization */
+-	add_positive(&cfs_rq->avg.util_avg, delta_avg);
+-	add_positive(&cfs_rq->avg.util_sum, delta_sum);
+-
+-	/* See update_cfs_rq_load_avg() */
+-	cfs_rq->avg.util_sum = max_t(u32, cfs_rq->avg.util_sum,
+-					  cfs_rq->avg.util_avg * PELT_MIN_DIVIDER);
++	__update_sa(&cfs_rq->avg, util, delta_avg, delta_sum);
+ }
+ 
+ static inline void
+@@ -4281,11 +4276,7 @@ update_tg_cfs_runnable(struct cfs_rq *cfs_rq, struct sched_entity *se, struct cf
+ 	se->avg.runnable_sum = new_sum;
+ 
+ 	/* Update parent cfs_rq runnable */
+-	add_positive(&cfs_rq->avg.runnable_avg, delta_avg);
+-	add_positive(&cfs_rq->avg.runnable_sum, delta_sum);
+-	/* See update_cfs_rq_load_avg() */
+-	cfs_rq->avg.runnable_sum = max_t(u32, cfs_rq->avg.runnable_sum,
+-					      cfs_rq->avg.runnable_avg * PELT_MIN_DIVIDER);
++	__update_sa(&cfs_rq->avg, runnable, delta_avg, delta_sum);
+ }
+ 
+ static inline void
+@@ -4349,11 +4340,7 @@ update_tg_cfs_load(struct cfs_rq *cfs_rq, struct sched_entity *se, struct cfs_rq
+ 
+ 	se->avg.load_sum = runnable_sum;
+ 	se->avg.load_avg = load_avg;
+-	add_positive(&cfs_rq->avg.load_avg, delta_avg);
+-	add_positive(&cfs_rq->avg.load_sum, delta_sum);
+-	/* See update_cfs_rq_load_avg() */
+-	cfs_rq->avg.load_sum = max_t(u32, cfs_rq->avg.load_sum,
+-					  cfs_rq->avg.load_avg * PELT_MIN_DIVIDER);
++	__update_sa(&cfs_rq->avg, load, delta_avg, delta_sum);
+ }
+ 
+ static inline void add_tg_cfs_propagate(struct cfs_rq *cfs_rq, long runnable_sum)
+@@ -4552,33 +4539,13 @@ update_cfs_rq_load_avg(u64 now, struct cfs_rq *cfs_rq)
+ 		raw_spin_unlock(&cfs_rq->removed.lock);
+ 
+ 		r = removed_load;
+-		sub_positive(&sa->load_avg, r);
+-		sub_positive(&sa->load_sum, r * divider);
+-		/* See sa->util_sum below */
+-		sa->load_sum = max_t(u32, sa->load_sum, sa->load_avg * PELT_MIN_DIVIDER);
++		__update_sa(sa, load, -r, -r*divider);
+ 
+ 		r = removed_util;
+-		sub_positive(&sa->util_avg, r);
+-		sub_positive(&sa->util_sum, r * divider);
+-		/*
+-		 * Because of rounding, se->util_sum might ends up being +1 more than
+-		 * cfs->util_sum. Although this is not a problem by itself, detaching
+-		 * a lot of tasks with the rounding problem between 2 updates of
+-		 * util_avg (~1ms) can make cfs->util_sum becoming null whereas
+-		 * cfs_util_avg is not.
+-		 * Check that util_sum is still above its lower bound for the new
+-		 * util_avg. Given that period_contrib might have moved since the last
+-		 * sync, we are only sure that util_sum must be above or equal to
+-		 *    util_avg * minimum possible divider
+-		 */
+-		sa->util_sum = max_t(u32, sa->util_sum, sa->util_avg * PELT_MIN_DIVIDER);
++		__update_sa(sa, util, -r, -r*divider);
+ 
+ 		r = removed_runnable;
+-		sub_positive(&sa->runnable_avg, r);
+-		sub_positive(&sa->runnable_sum, r * divider);
+-		/* See sa->util_sum above */
+-		sa->runnable_sum = max_t(u32, sa->runnable_sum,
+-					      sa->runnable_avg * PELT_MIN_DIVIDER);
++		__update_sa(sa, runnable, -r, -r*divider);
+ 
+ 		/*
+ 		 * removed_runnable is the unweighted version of removed_load so we
+@@ -4663,17 +4630,8 @@ static void attach_entity_load_avg(struct cfs_rq *cfs_rq, struct sched_entity *s
+ static void detach_entity_load_avg(struct cfs_rq *cfs_rq, struct sched_entity *se)
+ {
+ 	dequeue_load_avg(cfs_rq, se);
+-	sub_positive(&cfs_rq->avg.util_avg, se->avg.util_avg);
+-	sub_positive(&cfs_rq->avg.util_sum, se->avg.util_sum);
+-	/* See update_cfs_rq_load_avg() */
+-	cfs_rq->avg.util_sum = max_t(u32, cfs_rq->avg.util_sum,
+-					  cfs_rq->avg.util_avg * PELT_MIN_DIVIDER);
+-
+-	sub_positive(&cfs_rq->avg.runnable_avg, se->avg.runnable_avg);
+-	sub_positive(&cfs_rq->avg.runnable_sum, se->avg.runnable_sum);
+-	/* See update_cfs_rq_load_avg() */
+-	cfs_rq->avg.runnable_sum = max_t(u32, cfs_rq->avg.runnable_sum,
+-					      cfs_rq->avg.runnable_avg * PELT_MIN_DIVIDER);
++	__update_sa(&cfs_rq->avg, util, -se->avg.util_avg, -se->avg.util_sum);
++	__update_sa(&cfs_rq->avg, runnable, -se->avg.runnable_avg, -se->avg.runnable_sum);
+ 
+ 	add_tg_cfs_propagate(cfs_rq, -se->avg.load_sum);
+ 
+@@ -9949,15 +9907,11 @@ static unsigned long task_h_load(struct task_struct *p)
+ }
+ #endif /* !CONFIG_FAIR_GROUP_SCHED */
+ 
+-static void sched_balance_update_blocked_averages(int cpu)
++static void __sched_balance_update_blocked_averages(struct rq *rq)
+ {
+ 	bool decayed = false, done = true;
+-	struct rq *rq = cpu_rq(cpu);
+-	struct rq_flags rf;
+ 
+-	rq_lock_irqsave(rq, &rf);
+ 	update_blocked_load_tick(rq);
+-	update_rq_clock(rq);
+ 
+ 	decayed |= __update_blocked_others(rq, &done);
+ 	decayed |= __update_blocked_fair(rq, &done);
+@@ -9965,7 +9919,15 @@ static void sched_balance_update_blocked_averages(int cpu)
+ 	update_blocked_load_status(rq, !done);
+ 	if (decayed)
+ 		cpufreq_update_util(rq, 0);
+-	rq_unlock_irqrestore(rq, &rf);
++}
++
++static void sched_balance_update_blocked_averages(int cpu)
++{
++	struct rq *rq = cpu_rq(cpu);
++
++	guard(rq_lock_irqsave)(rq);
++	update_rq_clock(rq);
++	__sched_balance_update_blocked_averages(rq);
+ }
+ 
+ /********** Helpers for sched_balance_find_src_group ************************/
+@@ -12912,12 +12874,17 @@ static int sched_balance_newidle(struct rq *this_rq, struct rq_flags *rf)
+ 	}
+ 	rcu_read_unlock();
+ 
++	/*
++	 * Include sched_balance_update_blocked_averages() in the cost
++	 * calculation because it can be quite costly -- this ensures we skip
++	 * it when avg_idle gets to be very low.
++	 */
++	t0 = sched_clock_cpu(this_cpu);
++	__sched_balance_update_blocked_averages(this_rq);
++
+ 	rq_modified_clear(this_rq);
+ 	raw_spin_rq_unlock(this_rq);
+ 
+-	t0 = sched_clock_cpu(this_cpu);
+-	sched_balance_update_blocked_averages(this_cpu);
+-
+ 	rcu_read_lock();
+ 	for_each_domain(this_cpu, sd) {
+ 		u64 domain_cost;
+diff --git a/kernel/sched/sched.h b/kernel/sched/sched.h
+index d30cca6870f5..4ba122a15fb2 100644
+--- a/kernel/sched/sched.h
++++ b/kernel/sched/sched.h
+@@ -1381,12 +1381,12 @@ static inline struct cpumask *sched_group_span(struct sched_group *sg);
+ 
+ DECLARE_STATIC_KEY_FALSE(__sched_core_enabled);
+ 
+-static inline bool sched_core_enabled(struct rq *rq)
++static __always_inline bool sched_core_enabled(struct rq *rq)
+ {
+ 	return static_branch_unlikely(&__sched_core_enabled) && rq->core_enabled;
+ }
+ 
+-static inline bool sched_core_disabled(void)
++static __always_inline bool sched_core_disabled(void)
+ {
+ 	return !static_branch_unlikely(&__sched_core_enabled);
+ }
+@@ -1395,7 +1395,7 @@ static inline bool sched_core_disabled(void)
+  * Be careful with this function; not for general use. The return value isn't
+  * stable unless you actually hold a relevant rq->__lock.
+  */
+-static inline raw_spinlock_t *rq_lockp(struct rq *rq)
++static __always_inline raw_spinlock_t *rq_lockp(struct rq *rq)
+ {
+ 	if (sched_core_enabled(rq))
+ 		return &rq->core->__lock;
+@@ -1403,7 +1403,7 @@ static inline raw_spinlock_t *rq_lockp(struct rq *rq)
+ 	return &rq->__lock;
+ }
+ 
+-static inline raw_spinlock_t *__rq_lockp(struct rq *rq)
++static __always_inline raw_spinlock_t *__rq_lockp(struct rq *rq)
+ {
+ 	if (rq->core_enabled)
+ 		return &rq->core->__lock;
+@@ -1497,12 +1497,12 @@ static inline bool sched_core_disabled(void)
+ 	return true;
+ }
+ 
+-static inline raw_spinlock_t *rq_lockp(struct rq *rq)
++static __always_inline raw_spinlock_t *rq_lockp(struct rq *rq)
+ {
+ 	return &rq->__lock;
+ }
+ 
+-static inline raw_spinlock_t *__rq_lockp(struct rq *rq)
++static __always_inline raw_spinlock_t *__rq_lockp(struct rq *rq)
+ {
+ 	return &rq->__lock;
+ }
+@@ -1551,20 +1551,24 @@ static inline void lockdep_assert_rq_held(struct rq *rq)
+ 
+ extern void raw_spin_rq_lock_nested(struct rq *rq, int subclass);
+ extern bool raw_spin_rq_trylock(struct rq *rq);
+-extern void raw_spin_rq_unlock(struct rq *rq);
+ 
+-static inline void raw_spin_rq_lock(struct rq *rq)
++static __always_inline void raw_spin_rq_lock(struct rq *rq)
+ {
+ 	raw_spin_rq_lock_nested(rq, 0);
+ }
+ 
+-static inline void raw_spin_rq_lock_irq(struct rq *rq)
++static __always_inline void raw_spin_rq_unlock(struct rq *rq)
++{
++	raw_spin_unlock(rq_lockp(rq));
++}
++
++static __always_inline void raw_spin_rq_lock_irq(struct rq *rq)
+ {
+ 	local_irq_disable();
+ 	raw_spin_rq_lock(rq);
+ }
+ 
+-static inline void raw_spin_rq_unlock_irq(struct rq *rq)
++static __always_inline void raw_spin_rq_unlock_irq(struct rq *rq)
+ {
+ 	raw_spin_rq_unlock(rq);
+ 	local_irq_enable();
 diff --git a/scripts/package/PKGBUILD b/scripts/package/PKGBUILD
-index 452374d63c244..08f80d7c5df05 100644
+index 452374d63c24..08f80d7c5df0 100644
 --- a/scripts/package/PKGBUILD
 +++ b/scripts/package/PKGBUILD
 @@ -90,6 +90,11 @@ _package-headers() {
